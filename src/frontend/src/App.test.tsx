@@ -18,6 +18,19 @@ afterEach(() => {
 });
 
 describe("task center", () => {
+  it("shows the approved studio brand names without a logo mark", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    render(<App />);
+
+    const brand = screen.getByRole("link", {
+      name: "田薪個人工作室 TianxinStudio OS 任務中心首頁",
+    });
+    expect(within(brand).getByText("田薪個人工作室")).toBeInTheDocument();
+    expect(within(brand).getByText("TianxinStudio OS")).toBeInTheDocument();
+    expect(within(brand).queryByText("天")).not.toBeInTheDocument();
+    expect(brand.querySelector(".brand-mark")).toBeNull();
+  });
+
   it("shows the task list and saves a status change", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => [task] })

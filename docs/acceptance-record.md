@@ -70,4 +70,47 @@
 - 敏感資料檢查：合成原始 Email 與手機字串未出現在任務文字欄、脫敏中繼資料查詢結果或該測試擷取的應用日誌中。此範圍不代表掃描正式資料庫或其他日誌位置。
 - 還原：將已驗證的第一階段備份還原至同一合成測試路徑後，確認舊版 `tasks`、`redaction_events` 結構及全部原始合成資料恢復，`PRAGMA integrity_check` 為 `ok`。還原測試不涉及工作資料庫。
 - 自動測試：新增的端到端合成測試 1 項通過；完整 Python 測試 85 項通過；前端測試 37 項通過；TypeScript 型別檢查及前端建置通過。這些是 Codex 執行的自動檢查，不是 CEO 手動驗收。
-- 正式操作：未讀取、備份、遷移或還原工作資料庫；未啟動預設工作環境。正式工作資料庫路徑待 CEO 確認，正式備份位置待 CEO 指定，且正式操作尚未授權。
+- 正式操作（截至當次整合驗收）：未讀取、備份、遷移或還原工作資料庫；未啟動預設工作環境。當時正式工作資料庫路徑待 CEO 確認、備份位置待 CEO 指定。後續核准的正式備份另記於下節；遷移仍未授權。
+
+## F001 第二階段正式備份（當時遷移尚待另行核准）
+
+### Codex 執行紀錄（非 CEO 手動驗收）
+
+- 日期與時間：2026-11-15 02:18:09 +08:00（實際備份完成時間）。
+- 執行前：HEAD 為 CEO 核准的 `9580fbc`；沒有已追蹤變更。指定工作資料庫存在，唯讀 schema 檢查分類為已知第一階段 `legacy`。已知 API／前端服務埠沒有監聽，未見 Python／Node 任務中心服務程序，資料庫可短暫取得獨占唯讀檔案控制；未發現 `-wal`、`-shm`、`-journal` sidecar。
+- 初次匯入失敗：使用 `C:\Users\Cingul Savaran\AppData\Local\Programs\Python\Python310\python.exe`，工作目錄為 `D:\tianxin-studio-os`。完整例外為 `File "<string>", line 1, in <module>` → `ModuleNotFoundError: No module named 'app'`。原因是從 repo 根目錄執行匯入，該目錄下沒有頂層 `app` 套件。失敗發生在 helper 匯入前，未呼叫備份 helper；當次只建立了核准的備份資料夾。
+- 修正與合成驗證：Python `3.10.6` 解譯器為上述絕對路徑，工作目錄改為 `D:\tianxin-studio-os\src\backend`；`app`、`app.migrations` 與 `app.migrations.core` 均從本專案 `src/backend/app` 載入。沒有專案 `.venv`。以 pytest 專屬暫存合成資料庫執行相同 `backup_database(source, backup)` 呼叫，來源／備份完整性為 `ok`、schema 與所有資料列一致，合成來源位元組未改變。
+- 正式備份：`D:\tianxin-studio-backups\F001-phase02\tasks-pre-phase02-20261115-021808.sqlite3`
+- 備份大小：`20480` bytes。SHA-256：`ffd152326b6b7914555f7c867b78bf42f7c4949c2457ec3690864539b04b75bb`。檔案系統最後寫入時間為 `2026-11-15 02:18:09 +08:00`。
+- 驗證：備份 helper 以 SQLite `mode=ro` 讀取來源。來源及備份 `PRAGMA integrity_check` 皆為 `ok`；schema 與 `tasks`、`redaction_events` 的全部資料列程式化比對一致。沒有輸出任務內容或敏感值。
+- 後續界線（截至該備份階段結束）：正式遷移、還原及啟動應用程式均未執行，並待 CEO 另行核准。其後正式遷移及 CEO 確認另記於後續章節；以上仍是 Codex 操作結果。
+
+## F001 第二階段正式遷移與唯讀冒煙
+
+### Codex 執行紀錄（後續 CEO 手動確認另見下節）
+
+- 日期：2026-11-15。
+- 執行前：HEAD 為 `9580fbc`；僅有已知三份文件未提交變更及保留的驗收截圖。工作資料庫及已驗證備份均存在；備份 SHA-256 與 CEO 指定值相符。唯讀比對確認來源是已知 `legacy` schema，schema、`tasks` 與 `redaction_events` 全部資料列均與備份一致。確認沒有已知任務中心服務、已知服務埠監聽、sidecar 或資料庫檔案鎖。
+- 遷移：使用 Python 3.10.6（`C:\Users\Cingul Savaran\AppData\Local\Programs\Python\Python310\python.exe`），工作目錄 `D:\tianxin-studio-os\src\backend`，以既有遷移 CLI 明確指定工作資料庫絕對路徑。遷移前為 `legacy`，完成後 revision 為 `0002_task_metadata`。
+- 遷移後驗證：`PRAGMA integrity_check` 為 `ok`；舊任務 `id`、`title`、`status`、`created_at`、`updated_at` 與核准備份逐筆一致；`redaction_events` 欄位值與資料列全部保留；舊任務 `description`、`department`、`assigned_ai`、`due_date` 為 `NULL`，`priority` 為 `MEDIUM`。僅回報比對結果，未列印資料列。
+- 唯讀冒煙：明確設定 `TASK_CENTER_DATABASE_URL=sqlite:///D:/tianxin-studio-os/.task-center/tasks.sqlite3`。任務清單 GET、`status=TODO` 加建立時間升冪的篩選排序 GET，以及前端首頁 GET 均回覆 HTTP 200。未新增任務、未修改狀態，沒有輸出 API 回應本文或任務內容。
+- 服務狀態：後端 PID `15676` 綁定 `127.0.0.1:8000`；前端 PID `21484` 綁定 `127.0.0.1:5173`。目前保留供 CEO 查看。停止前應先確認兩個監聽仍由上述 PID 持有，再執行 `Stop-Process -Id 15676,21484`。
+- 執行當時 CEO 最後畫面確認待完成；CEO 後續手動確認結果記於下節。以上仍為 Codex 執行結果，不改寫為 CEO 對自動測試或冒煙結果的確認。
+
+## F001 正式升級後品牌區修正
+
+### CEO 正式升級與品牌手動確認（非自動測試）
+
+- 驗收日期：2026-11-15。
+- 正式資料與功能確認：CEO 手動確認原有任務與狀態正常、新增欄位與篩選排序工具列正常，頁面載入及版本錯誤無。此為 CEO 手動確認，非自動測試。
+- 品牌區：CEO 手動確認「天」字圖樣已移除、「田薪個人工作室」與「TianxinStudio OS」顯示正確、排列正常並接受修正。此為 CEO 手動確認，非自動測試。
+- 階段狀態：**F001 第二階段正式工作環境升級完成，驗收通過**。
+
+### Codex 前端修正紀錄
+
+- 移除左上角「天」字圖樣及專用底框；品牌區改顯示主名稱「田薪個人工作室」、次名稱「TianxinStudio OS」。輔助名稱同步採用正確品牌名稱。
+- 窄螢幕下品牌名稱上下排列，沿用既有字體、色系與設計語言；未變更其他「天」字文字、任務內容或後端。
+- 品牌測試 RED 階段因舊輔助名稱未符合新名稱而失敗；修改後品牌測試通過。完整前端測試 38 項通過，型別檢查及建置通過。
+- 供 CEO 查看：前端 `http://127.0.0.1:5173`；本機 GET 回覆 HTTP 200。後端 PID `15676` 綁定 `127.0.0.1:8000`，前端 PID `21484` 綁定 `127.0.0.1:5173`，服務保留中。
+- 先前 Codex 自動測試與首頁 GET 不作為 CEO 視覺驗收證據；本節品牌驗收結果僅依 CEO 於 2026-11-15 提供的手動確認。
+- 服務收尾：CEO 確認後，Codex 重新核對前端 PID `21484` 與 `127.0.0.1:5173`、後端 PID `15676` 與 `127.0.0.1:8000` 及程序命令列，確認均屬本次任務中心後停止。未處理其他程序。

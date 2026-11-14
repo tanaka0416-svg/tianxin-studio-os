@@ -306,9 +306,11 @@ export default function App() {
   return (
     <main className="page-shell">
       <header className="topbar">
-        <a className="brand" href="#main" aria-label="TianxinStudio OS 任務中心首頁">
-          <span className="brand-mark" aria-hidden="true">天</span>
-          <span>TianxinStudio <strong>OS</strong></span>
+        <a className="brand" href="#main" aria-label="田薪個人工作室 TianxinStudio OS 任務中心首頁">
+          <span className="brand-copy">
+            <span className="brand-name">田薪個人工作室</span>
+            <span className="brand-platform">TianxinStudio OS</span>
+          </span>
         </a>
         <span className="local-mode"><span aria-hidden="true" />本機工作區</span>
       </header>
