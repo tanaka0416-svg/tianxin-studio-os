@@ -47,23 +47,38 @@ button, a, select { -webkit-tap-highlight-color: transparent; }
 h1 { margin: 0; color: #19273d; font-size: clamp(27px, 3vw, 34px); line-height: 1.2; letter-spacing: -.04em; }
 .page-description { margin: 10px 0 0; color: #7a8798; font-size: 14px; }
 .task-count { padding-bottom: 3px; color: #8994a4; font-size: 12px; white-space: nowrap; }
-.create-form { padding: 21px 23px 17px; background: #fff; border: 1px solid var(--line); border-radius: 11px; box-shadow: 0 3px 12px rgb(22 41 75 / 3%); }
-.create-form label { display: block; margin-bottom: 11px; font-size: 13px; font-weight: 700; }
-.create-controls { display: flex; gap: 10px; }
-.create-controls input { flex: 1; min-width: 0; height: 43px; padding: 0 13px; border: 1px solid #dfe5ee; border-radius: 7px; color: var(--ink); background: #fff; outline: none; font-size: 13px; }
-.create-controls input::placeholder { color: #a3adbb; }
-.create-controls input:focus, .status-control select:focus { border-color: #7190e9; box-shadow: 0 0 0 3px rgb(53 101 223 / 12%); }
-.create-controls button { min-width: 108px; height: 43px; padding: 0 16px; border: 0; border-radius: 7px; background: var(--blue); color: #fff; cursor: pointer; font-size: 13px; font-weight: 600; transition: background .15s ease; }
-.create-controls button:hover:not(:disabled) { background: #2855c7; }
-.create-controls button:disabled { background: #aab8df; cursor: not-allowed; }
-.privacy-note { margin: 10px 0 0; color: #929dad; font-size: 11px; }
-.error-message { margin: 15px 0 0; padding: 11px 13px; border: 1px solid #f2d2ce; border-radius: 7px; background: #fff7f6; color: #a64235; font-size: 13px; }
+.create-form { padding: 23px 24px 18px; background: #fff; border: 1px solid var(--line); border-radius: 11px; box-shadow: 0 3px 12px rgb(22 41 75 / 3%); }
+.form-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.form-heading h2 { margin: 0; color: #26364c; font-size: 16px; letter-spacing: -.02em; }
+.form-heading p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.required-note { padding-top: 2px; color: #929dad; font-size: 11px; white-space: nowrap; }
+.task-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 18px; }
+.form-field { display: grid; min-width: 0; gap: 7px; align-content: start; }
+.form-field-wide { grid-column: 1 / -1; }
+.form-field label { color: #43536a; font-size: 12px; font-weight: 650; }
+.form-field label span { color: #d05d50; }
+.form-field input, .form-field select, .form-field textarea { width: 100%; min-width: 0; min-height: 42px; padding: 10px 12px; border: 1px solid #dfe5ee; border-radius: 7px; color: var(--ink); background: #fff; outline: none; font: inherit; font-size: 13px; }
+.form-field textarea { min-height: 88px; resize: vertical; line-height: 1.55; }
+.form-field input::placeholder, .form-field textarea::placeholder { color: #a3adbb; }
+.form-field input:focus, .form-field select:focus, .form-field textarea:focus, .status-control select:focus { border-color: #7190e9; box-shadow: 0 0 0 3px rgb(53 101 223 / 12%); }
+.field-hint { color: #929dad; font-size: 11px; }
+.character-count { justify-self: end; font-variant-numeric: tabular-nums; }
+.form-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 18px; padding-top: 15px; border-top: 1px solid #f0f2f6; }
+.privacy-note { margin: 0; color: #929dad; font-size: 11px; line-height: 1.5; }
+.form-actions button { min-width: 120px; min-height: 42px; padding: 0 18px; border: 0; border-radius: 7px; background: var(--blue); color: #fff; cursor: pointer; font-size: 13px; font-weight: 600; transition: background .15s ease; }
+.form-actions button:hover:not(:disabled) { background: #2855c7; }
+.form-actions button:disabled { background: #aab8df; cursor: not-allowed; }
+.ai-assignment-note { margin: 13px 0 0; color: #6e7b8f; font-size: 11px; line-height: 1.5; }
+.error-message { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 15px 0 0; padding: 11px 13px; border: 1px solid #f2d2ce; border-radius: 7px; background: #fff7f6; color: #a64235; font-size: 13px; }
+.error-message p { margin: 0; line-height: 1.5; }
+.error-message button { flex: 0 0 auto; min-height: 36px; padding: 0 11px; border: 1px solid #e8bcb6; border-radius: 6px; background: #fff; color: #934137; cursor: pointer; font: inherit; font-size: 12px; }
 .task-section { margin-top: 34px; }
-.section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
 .section-heading h2 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
-.section-heading span { color: #98a2b0; font-size: 11px; }
+.section-heading p { margin: 5px 0 0; color: #98a2b0; font-size: 11px; }
+.section-heading .task-count-inline { color: #98a2b0; font-size: 11px; white-space: nowrap; }
 .task-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
-.task-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 15px; min-height: 76px; padding: 13px 4px; border-bottom: 1px solid var(--line); }
+.task-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: start; gap: 15px; min-height: 76px; padding: 17px 4px; border-bottom: 1px solid var(--line); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #9ba8ba; }
 .status-in_progress { background: #e0a528; }
 .status-review { background: #8662d4; }
@@ -71,7 +86,16 @@ h1 { margin: 0; color: #19273d; font-size: clamp(27px, 3vw, 34px); line-height: 
 .status-done { background: #41a783; }
 .task-copy { min-width: 0; }
 .task-copy h3 { overflow-wrap: anywhere; margin: 0; color: #27364b; font-size: 13px; font-weight: 600; line-height: 1.5; }
-.task-copy p { margin: 5px 0 0; color: #9aa4b2; font-size: 11px; }
+.task-description-wrap { margin-top: 6px; }
+.task-description { overflow-wrap: anywhere; margin: 0; color: #6f7d90; font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+.description-clamped { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.description-toggle { margin-top: 5px; padding: 3px 0; border: 0; background: none; color: #3565c9; cursor: pointer; font: inherit; font-size: 11px; text-align: left; }
+.description-toggle:focus-visible { outline: 2px solid #7190e9; outline-offset: 2px; }
+.task-meta { display: flex; flex-wrap: wrap; gap: 7px 16px; margin: 11px 0 0; }
+.task-meta div { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; font-size: 11px; line-height: 1.5; }
+.task-meta dt { color: #98a2b0; }
+.task-meta dd { overflow-wrap: anywhere; margin: 0; color: #526178; font-weight: 600; }
+.task-meta .updated-at dd { color: #98a2b0; font-weight: 400; }
 .status-control select { min-width: 106px; height: 33px; padding: 0 25px 0 10px; border: 1px solid #e2e7ef; border-radius: 6px; color: #58667a; background: #fff; outline: none; font-size: 11px; cursor: pointer; }
 .empty-state { display: grid; min-height: 134px; margin: 0; place-items: center; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: #929dad; font-size: 13px; text-align: center; }
 .footer-note { margin-top: 29px; color: #a1aab7; font-size: 11px; }
@@ -86,12 +110,18 @@ h1 { margin: 0; color: #19273d; font-size: clamp(27px, 3vw, 34px); line-height: 
   .content { width: 100%; padding: 29px 19px 25px; }
   .page-heading { align-items: flex-start; margin-bottom: 22px; }
   .task-count { padding-top: 4px; }
-  .create-form { padding: 18px 16px 14px; }
-  .create-controls { flex-direction: column; }
-  .create-controls button { width: 100%; }
-  .task-row { grid-template-columns: 8px minmax(0, 1fr); gap: 12px; padding: 14px 2px; }
+  .create-form { padding: 18px 16px 15px; }
+  .form-heading { margin-bottom: 17px; }
+  .task-form-grid { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .form-field-wide { grid-column: auto; }
+  .form-actions { align-items: stretch; flex-direction: column; }
+  .form-actions button { width: 100%; }
+  .error-message { align-items: stretch; flex-direction: column; }
+  .error-message button { width: 100%; }
+  .task-row { grid-template-columns: 8px minmax(0, 1fr); gap: 12px; padding: 15px 2px; }
   .status-control { grid-column: 2; }
   .status-control select { width: 100%; }
+  .task-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 10px; }
   .task-section { margin-top: 28px; }
 }
 
