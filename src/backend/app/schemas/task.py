@@ -1,7 +1,8 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
+import re
 
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 
 class TaskStatus(str, Enum):
@@ -13,8 +14,42 @@ class TaskStatus(str, Enum):
     DONE = "DONE"
 
 
+class Department(str, Enum):
+    SECRETARIAT = "SECRETARIAT"
+    LEGAL = "LEGAL"
+    DEVELOPMENT = "DEVELOPMENT"
+    MEDIA = "MEDIA"
+    QA = "QA"
+    FINANCE = "FINANCE"
+    WEB = "WEB"
+    DATA_GOVERNANCE = "DATA_GOVERNANCE"
+
+
+class AssignedAI(str, Enum):
+    CLAUDE = "CLAUDE"
+    PERPLEXITY = "PERPLEXITY"
+    CHATGPT = "CHATGPT"
+    CODEX = "CODEX"
+    GROK = "GROK"
+    LOCAL_AI = "LOCAL_AI"
+
+
+class TaskPriority(str, Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    URGENT = "URGENT"
+
+
 class TaskCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str
+    description: str | None = Field(default=None, max_length=5000)
+    department: Department | None = None
+    assigned_ai: AssignedAI | None = None
+    priority: TaskPriority = TaskPriority.MEDIUM
+    due_date: date | None = None
 
     @field_validator("title")
     @classmethod
@@ -23,6 +58,25 @@ class TaskCreate(BaseModel):
         if not normalized:
             raise ValueError("任務標題不可空白")
         return normalized
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("due_date", mode="before")
+    @classmethod
+    def require_iso_date(cls, value):
+        if value is None or isinstance(value, date) and not isinstance(value, datetime):
+            return value
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError("截止日必須使用 YYYY-MM-DD 格式")
+        return date.fromisoformat(value)
 
 
 class TaskStatusUpdate(BaseModel):
@@ -35,6 +89,11 @@ class TaskRead(BaseModel):
     id: str
     title: str
     status: TaskStatus
+    description: str | None
+    department: Department | None
+    assigned_ai: AssignedAI | None
+    priority: TaskPriority
+    due_date: date | None
     created_at: datetime
     updated_at: datetime
 

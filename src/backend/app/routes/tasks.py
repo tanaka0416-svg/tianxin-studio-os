@@ -27,19 +27,40 @@ def _save_records(session, records) -> None:
 def create_task(payload: TaskCreate, request: Request):
     session_factory = request.app.state.session_factory
     with session_factory() as session:
-        try:
-            safe_title = redact_text(payload.title, field_name="title")
-        except UncertainSensitiveData as error:
-            _save_records(session, error.records)
+        redaction_records = []
+        safe_fields = {}
+        uncertain = False
+        for field_name, value in (("title", payload.title), ("description", payload.description)):
+            if value is None:
+                safe_fields[field_name] = None
+                continue
+            try:
+                result = redact_text(value, field_name=field_name)
+                safe_fields[field_name] = result.text
+                redaction_records.extend(result.records)
+            except UncertainSensitiveData as error:
+                uncertain = True
+                redaction_records.extend(error.records)
+
+        if uncertain:
+            _save_records(session, redaction_records)
             session.commit()
             raise HTTPException(
                 status_code=422,
-                detail="任務標題包含無法安全分類的資料，未建立任務。",
+                detail="任務文字包含無法安全分類的資料，未建立任務。",
             ) from None
 
-        task = Task(title=safe_title.text, status="TODO")
+        task = Task(
+            title=safe_fields["title"],
+            description=safe_fields["description"],
+            department=payload.department.value if payload.department else None,
+            assigned_ai=payload.assigned_ai.value if payload.assigned_ai else None,
+            priority=payload.priority.value,
+            due_date=payload.due_date,
+            status="TODO",
+        )
         session.add(task)
-        _save_records(session, safe_title.records)
+        _save_records(session, redaction_records)
         session.commit()
         session.refresh(task)
         return task

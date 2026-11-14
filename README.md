@@ -27,7 +27,7 @@ npm ci
 npm run dev
 ```
 
-開啟 Vite 顯示的本機網址（預設 `http://127.0.0.1:5173`）。SQLite 資料庫建立於專案根目錄的 `.task-center/tasks.sqlite3`。
+開啟 Vite 顯示的本機網址（預設 `http://127.0.0.1:5173`）。預設 SQLite 路徑為專案根目錄的 `.task-center/tasks.sqlite3`；後端啟動不會建立資料表或自動遷移，資料庫必須先由明確遷移命令升至目前版本。正式工作資料庫遷移另需 CEO 授權。
 
 ### 測試
 
@@ -51,14 +51,18 @@ npm run build
 
 ```powershell
 cd src/backend
-python -m app.migrations upgrade --database-path "$env:TEMP\tianxin-phase2-test.sqlite3"
+$testDatabase = Join-Path $env:TEMP 'tianxin-phase2-test.sqlite3'
+New-Item -ItemType Directory -Force (Split-Path $testDatabase) | Out-Null
+python -m app.migrations upgrade --database-path $testDatabase
 ```
 
 遷移工具只接受符合第一階段 schema 的 SQLite 資料庫或指定的空資料庫；遇到未知 schema 時停止。正式遷移前須停止後端、使用 SQLite Online Backup API 備份並驗證備份，且另行取得 CEO 對正式資料庫操作的授權。
 
+第二階段後端啟動前會以唯讀方式確認資料庫已由明確遷移命令升至目前版本；應用程式啟動不會建立資料表或自動遷移。工作資料庫尚未完成另行授權的正式升級前，不應啟動連向該資料庫的服務。
+
 ### 脫敏閘道
 
-任務標題在寫入資料庫前由後端本機檢查。可辨識的 Email、手機、身分證、護照、金融帳號、信用卡及統一編號會以佔位符取代；敏感候選值無法分類時拒絕建立任務，並只記錄長度、類型、位置與時間，不保存原始值。第一階段只處理文字。
+任務標題與描述在寫入資料庫前由後端本機檢查。可辨識的 Email、手機、身分證、護照、金融帳號、信用卡及統一編號會以佔位符取代；敏感候選值無法分類時拒絕建立任務，並只記錄長度、類型、位置與時間，不保存原始值。只處理文字。負責 AI 僅為任務指派紀錄，目前未串接自動執行。
 
 ## 開發原則
 

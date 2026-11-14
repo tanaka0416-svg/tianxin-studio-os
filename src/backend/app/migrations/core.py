@@ -159,7 +159,9 @@ def _inspect_database(path: Path) -> str:
 
             _validate_task_schema(connection, current=current)
             _validate_redaction_schema(connection)
-            return "versioned" if versioned else "legacy"
+            if versioned:
+                return "current" if current else "versioned_legacy"
+            return "legacy"
     except MigrationError:
         raise
     except sqlite3.Error as error:
@@ -187,7 +189,7 @@ def upgrade_database(database_path: str | Path) -> None:
         if state == "legacy":
             command.stamp(config, LEGACY_REVISION)
         command.upgrade(config, "head")
-        if _inspect_database(path) != "versioned":
+        if _inspect_database(path) != "current":
             raise MigrationError("Migration did not produce a recognized schema.")
     except MigrationError:
         raise
@@ -261,3 +263,20 @@ def restore_database(backup_path: str | Path, database_path: str | Path) -> None
         raise MigrationError("SQLite restore failed; preserve the target and verified backup.") from error
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def require_current_database(database_path: str | Path) -> None:
+    """Read-only startup guard; never creates, stamps, or upgrades a database."""
+    try:
+        path = Path(database_path).resolve()
+        state = _inspect_database(path)
+    except MigrationError:
+        raise RuntimeError(
+            "Task Center database schema is unavailable or unsupported. "
+            "Stop the service and explicitly run the migration tool for this database path."
+        ) from None
+    if state != "current":
+        raise RuntimeError(
+            "Task Center database schema is not at the current revision. "
+            "Stop the service and explicitly run the migration tool for this database path."
+        )
