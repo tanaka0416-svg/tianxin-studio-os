@@ -8,7 +8,24 @@
 
 ### 第二階段：任務欄位表單與清單資訊
 
-任務表單可填寫標題、純文字描述、部門、主要負責 AI、優先級與截止日；清單會顯示這些欄位及更新時間。AI 指派只作記錄，不會自動執行。此切片未加入篩選、排序或既有任務欄位編輯。
+任務表單可填寫標題、純文字描述、部門、主要負責 AI、優先級與截止日；清單會顯示這些欄位及更新時間。AI 指派只作記錄，不會自動執行。前端尚未加入篩選排序工具列或既有任務欄位編輯。
+
+#### 任務清單 API 篩選與排序
+
+`GET /api/tasks` 支援以下單值查詢參數：
+
+| 參數 | 合法值 |
+|---|---|
+| `status` | `TODO`、`IN_PROGRESS`、`REVIEW`、`BLOCKED`、`RETURNED`、`DONE` |
+| `department` | `SECRETARIAT`、`LEGAL`、`DEVELOPMENT`、`MEDIA`、`QA`、`FINANCE`、`WEB`、`DATA_GOVERNANCE` |
+| `assigned_ai` | `CLAUDE`、`PERPLEXITY`、`CHATGPT`、`CODEX`、`GROK`、`LOCAL_AI` |
+| `priority` | `LOW`、`MEDIUM`、`HIGH`、`URGENT` |
+| `sort_by` | `created_at`、`updated_at`、`due_date`、`priority` |
+| `order` | `asc`、`desc` |
+
+省略篩選參數代表不篩選；各篩選維度以 AND 組合，重複參數或非法值回覆 422，不提供未指派專用代碼。預設排序為 `created_at ASC`；時間依資料庫 UTC 值比較，截止日依日曆日期比較且未設定者在兩種方向均置底，優先級依 `LOW < MEDIUM < HIGH < URGENT` 排序。同值結果以 `created_at ASC`、`id ASC` 穩定排列。此 API 不提供搜尋、分頁或自由排序欄位。
+
+範例：`GET /api/tasks?department=DEVELOPMENT&priority=HIGH&sort_by=due_date&order=asc`
 
 ### 啟動方式
 

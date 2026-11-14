@@ -1,8 +1,18 @@
-from fastapi import APIRouter, HTTPException, Request, status
-from sqlalchemy import select
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, HTTPException, Query, Request, status
+from sqlalchemy import case, select
 
 from app.models.task import RedactionEvent, Task
-from app.schemas.task import TaskCreate, TaskRead, TaskStatusUpdate
+from app.schemas.task import (
+    AssignedAI,
+    Department,
+    TaskCreate,
+    TaskPriority,
+    TaskRead,
+    TaskStatus,
+    TaskStatusUpdate,
+)
 from app.services.redaction_gate import UncertainSensitiveData, redact_text
 
 
@@ -67,9 +77,54 @@ def create_task(payload: TaskCreate, request: Request):
 
 
 @router.get("", response_model=list[TaskRead])
-def list_tasks(request: Request):
+def list_tasks(
+    request: Request,
+    status_filter: Annotated[TaskStatus | None, Query(alias="status")] = None,
+    department: Department | None = None,
+    assigned_ai: AssignedAI | None = None,
+    priority: TaskPriority | None = None,
+    sort_by: Literal["created_at", "updated_at", "due_date", "priority"] = "created_at",
+    order: Literal["asc", "desc"] = "asc",
+):
+    for name in ("status", "department", "assigned_ai", "priority", "sort_by", "order"):
+        if len(request.query_params.getlist(name)) > 1:
+            raise HTTPException(
+                status_code=422,
+                detail="查詢參數無效；每個參數只能提供一個值。",
+            )
+
+    statement = select(Task)
+    if status_filter is not None:
+        statement = statement.where(Task.status == status_filter.value)
+    if department is not None:
+        statement = statement.where(Task.department == department.value)
+    if assigned_ai is not None:
+        statement = statement.where(Task.assigned_ai == assigned_ai.value)
+    if priority is not None:
+        statement = statement.where(Task.priority == priority.value)
+
+    priority_rank = case(
+        (Task.priority == "LOW", 0),
+        (Task.priority == "MEDIUM", 1),
+        (Task.priority == "HIGH", 2),
+        (Task.priority == "URGENT", 3),
+        else_=4,
+    )
+    sortable_columns = {
+        "created_at": Task.created_at,
+        "updated_at": Task.updated_at,
+        "due_date": Task.due_date,
+        "priority": priority_rank,
+    }
+    sort_column = sortable_columns[sort_by]
+    primary_order = sort_column.asc() if order == "asc" else sort_column.desc()
+    ordering = []
+    if sort_by == "due_date":
+        ordering.append(case((Task.due_date.is_(None), 1), else_=0).asc())
+    ordering.extend((primary_order, Task.created_at.asc(), Task.id.asc()))
+
     with request.app.state.session_factory() as session:
-        return list(session.scalars(select(Task).order_by(Task.created_at, Task.id)))
+        return list(session.scalars(statement.order_by(*ordering)))
 
 
 @router.patch("/{task_id}/status", response_model=TaskRead)

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, timezone
 import logging
 import sqlite3
 
@@ -21,7 +21,7 @@ def make_app(tmp_path):
 
 
 def make_request(app):
-    return Request({"type": "http", "app": app})
+    return Request({"type": "http", "app": app, "query_string": b""})
 
 
 def response_data(task):
@@ -387,3 +387,242 @@ def test_app_startup_safely_refuses_unversioned_or_unknown_schema(tmp_path, sche
         "unknown": {"unrelated"},
     }
     assert names == expected_names[schema_kind]
+
+
+def synthetic_task(
+    task_id,
+    *,
+    created_day,
+    updated_day,
+    due_day,
+    priority,
+    status="TODO",
+    department="DEVELOPMENT",
+    assigned_ai="CODEX",
+):
+    return Task(
+        id=task_id,
+        title=f"合成任務 {task_id}",
+        status=status,
+        description=None,
+        department=department,
+        assigned_ai=assigned_ai,
+        priority=priority,
+        due_date=date(2026, 1, due_day) if due_day is not None else None,
+        created_at=datetime(2026, 1, created_day, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, updated_day, tzinfo=timezone.utc),
+    )
+
+
+def seed_tasks(app, tasks):
+    with app.state.session_factory() as session:
+        session.add_all(tasks)
+        session.commit()
+
+
+def listed_ids(client, **params):
+    response = client.get("/api/tasks", params=params)
+    assert response.status_code == 200
+    return [task["id"] for task in response.json()]
+
+
+def filter_tasks():
+    return [
+        synthetic_task(
+            "filter-a", created_day=1, updated_day=4, due_day=4, priority="HIGH",
+            status="TODO", department="DEVELOPMENT", assigned_ai="CODEX",
+        ),
+        synthetic_task(
+            "filter-b", created_day=2, updated_day=3, due_day=3, priority="LOW",
+            status="IN_PROGRESS", department="LEGAL", assigned_ai="CLAUDE",
+        ),
+        synthetic_task(
+            "filter-c", created_day=3, updated_day=2, due_day=2, priority="URGENT",
+            status="TODO", department="DEVELOPMENT", assigned_ai="CLAUDE",
+        ),
+        synthetic_task(
+            "filter-d", created_day=4, updated_day=1, due_day=1, priority="MEDIUM",
+            status="DONE", department="MEDIA", assigned_ai="CODEX",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_ids"),
+    [
+        ({"status": "IN_PROGRESS"}, ["filter-b"]),
+        ({"department": "DEVELOPMENT"}, ["filter-a", "filter-c"]),
+        ({"assigned_ai": "CODEX"}, ["filter-a", "filter-d"]),
+        ({"priority": "URGENT"}, ["filter-c"]),
+    ],
+)
+def test_list_filters_each_dimension(tmp_path, query, expected_ids):
+    app = make_app(tmp_path)
+    seed_tasks(app, filter_tasks())
+
+    with TestClient(app) as client:
+        assert listed_ids(client, **query) == expected_ids
+
+
+def test_list_combines_filter_dimensions_with_and(tmp_path):
+    app = make_app(tmp_path)
+    seed_tasks(app, filter_tasks())
+
+    with TestClient(app) as client:
+        assert listed_ids(
+            client,
+            status="TODO",
+            department="DEVELOPMENT",
+            assigned_ai="CLAUDE",
+            priority="URGENT",
+        ) == ["filter-c"]
+
+
+def test_list_returns_empty_array_when_filters_match_nothing(tmp_path):
+    app = make_app(tmp_path)
+    seed_tasks(app, filter_tasks())
+
+    with TestClient(app) as client:
+        response = client.get("/api/tasks", params={"status": "BLOCKED"})
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.parametrize(
+    ("query", "raw_value"),
+    [
+        ({"status": "person@example.com"}, "person@example.com"),
+        ({"department": "person@example.com"}, "person@example.com"),
+        ({"assigned_ai": "person@example.com"}, "person@example.com"),
+        ({"priority": "person@example.com"}, "person@example.com"),
+        ({"sort_by": "priority DESC; DROP TABLE tasks"}, "priority DESC; DROP TABLE tasks"),
+        ({"order": "SIDEWAYS"}, "SIDEWAYS"),
+    ],
+)
+def test_invalid_list_parameters_return_safe_422(tmp_path, caplog, query, raw_value):
+    app = make_app(tmp_path)
+
+    with TestClient(app) as client, caplog.at_level(logging.DEBUG, logger="app"):
+        response = client.get("/api/tasks", params=query)
+
+    assert response.status_code == 422
+    assert raw_value not in response.text
+    assert raw_value not in caplog.text
+
+
+def test_repeated_filter_parameter_is_rejected_instead_of_becoming_or_filter(tmp_path):
+    app = make_app(tmp_path)
+
+    with TestClient(app) as client:
+        response = client.get("/api/tasks?status=TODO&status=DONE")
+
+    assert response.status_code == 422
+
+
+def test_list_defaults_to_created_at_ascending_with_id_tie_breaker(tmp_path):
+    app = make_app(tmp_path)
+    seed_tasks(
+        app,
+        [
+            synthetic_task("default-z", created_day=1, updated_day=1, due_day=1, priority="LOW"),
+            synthetic_task("default-b", created_day=1, updated_day=1, due_day=1, priority="LOW"),
+            synthetic_task("default-a", created_day=1, updated_day=1, due_day=1, priority="LOW"),
+            synthetic_task("default-new", created_day=2, updated_day=2, due_day=2, priority="HIGH"),
+        ],
+    )
+
+    with TestClient(app) as client:
+        assert listed_ids(client) == ["default-a", "default-b", "default-z", "default-new"]
+
+
+def sort_tasks():
+    return [
+        synthetic_task("sort-high", created_day=4, updated_day=4, due_day=4, priority="HIGH"),
+        synthetic_task("sort-low", created_day=3, updated_day=1, due_day=2, priority="LOW"),
+        synthetic_task("sort-urgent", created_day=2, updated_day=3, due_day=1, priority="URGENT"),
+        synthetic_task("sort-medium", created_day=1, updated_day=2, due_day=3, priority="MEDIUM"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("sort_by", "order", "expected_ids"),
+    [
+        ("created_at", "asc", ["sort-medium", "sort-urgent", "sort-low", "sort-high"]),
+        ("created_at", "desc", ["sort-high", "sort-low", "sort-urgent", "sort-medium"]),
+        ("updated_at", "asc", ["sort-low", "sort-medium", "sort-urgent", "sort-high"]),
+        ("updated_at", "desc", ["sort-high", "sort-urgent", "sort-medium", "sort-low"]),
+        ("due_date", "asc", ["sort-urgent", "sort-low", "sort-medium", "sort-high"]),
+        ("due_date", "desc", ["sort-high", "sort-medium", "sort-low", "sort-urgent"]),
+        ("priority", "asc", ["sort-low", "sort-medium", "sort-high", "sort-urgent"]),
+        ("priority", "desc", ["sort-urgent", "sort-high", "sort-medium", "sort-low"]),
+    ],
+)
+def test_list_sorts_each_supported_column_in_both_directions(
+    tmp_path, sort_by, order, expected_ids
+):
+    app = make_app(tmp_path)
+    seed_tasks(app, sort_tasks())
+
+    with TestClient(app) as client:
+        assert listed_ids(client, sort_by=sort_by, order=order) == expected_ids
+
+
+@pytest.mark.parametrize(
+    ("order", "expected_ids"),
+    [
+        ("asc", ["date-early", "date-late", "null-old", "null-new"]),
+        ("desc", ["date-late", "date-early", "null-old", "null-new"]),
+    ],
+)
+def test_null_due_dates_remain_last_for_both_directions(tmp_path, order, expected_ids):
+    app = make_app(tmp_path)
+    seed_tasks(
+        app,
+        [
+            synthetic_task("null-new", created_day=4, updated_day=4, due_day=None, priority="LOW"),
+            synthetic_task("date-late", created_day=3, updated_day=3, due_day=20, priority="MEDIUM"),
+            synthetic_task("null-old", created_day=1, updated_day=1, due_day=None, priority="HIGH"),
+            synthetic_task("date-early", created_day=2, updated_day=2, due_day=5, priority="URGENT"),
+        ],
+    )
+
+    with TestClient(app) as client:
+        assert listed_ids(client, sort_by="due_date", order=order) == expected_ids
+
+
+@pytest.mark.parametrize("sort_by", ["created_at", "updated_at", "due_date", "priority"])
+@pytest.mark.parametrize("order", ["asc", "desc"])
+def test_equal_primary_values_use_created_at_then_id_ascending(tmp_path, sort_by, order):
+    app = make_app(tmp_path)
+    created_days = [1, 1, 1] if sort_by == "created_at" else [3, 1, 1]
+    seed_tasks(
+        app,
+        [
+            synthetic_task(
+                task_id,
+                created_day=created_day,
+                updated_day=5,
+                due_day=12,
+                priority="HIGH",
+            )
+            for task_id, created_day in zip(("tie-z", "tie-m", "tie-a"), created_days)
+        ],
+    )
+    expected_ids = ["tie-a", "tie-m", "tie-z"]
+
+    with TestClient(app) as client:
+        assert listed_ids(client, sort_by=sort_by, order=order) == expected_ids
+
+
+def test_list_applies_filters_before_requested_sort(tmp_path):
+    app = make_app(tmp_path)
+    seed_tasks(app, filter_tasks())
+
+    with TestClient(app) as client:
+        assert listed_ids(
+            client,
+            department="DEVELOPMENT",
+            sort_by="priority",
+            order="desc",
+        ) == ["filter-c", "filter-a"]
