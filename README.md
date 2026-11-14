@@ -45,6 +45,17 @@ npm test
 npm run build
 ```
 
+### 第二階段 schema 遷移工具（合成測試路徑範例）
+
+遷移工具不會在應用啟動時執行，且必須明確提供絕對資料庫路徑。以下範例只建立或升級 Windows 暫存目錄中的測試資料庫；正式工作資料庫路徑與備份位置需 CEO 另行授權，本範例不得改指向工作資料庫。
+
+```powershell
+cd src/backend
+python -m app.migrations upgrade --database-path "$env:TEMP\tianxin-phase2-test.sqlite3"
+```
+
+遷移工具只接受符合第一階段 schema 的 SQLite 資料庫或指定的空資料庫；遇到未知 schema 時停止。正式遷移前須停止後端、使用 SQLite Online Backup API 備份並驗證備份，且另行取得 CEO 對正式資料庫操作的授權。
+
 ### 脫敏閘道
 
 任務標題在寫入資料庫前由後端本機檢查。可辨識的 Email、手機、身分證、護照、金融帳號、信用卡及統一編號會以佔位符取代；敏感候選值無法分類時拒絕建立任務，並只記錄長度、類型、位置與時間，不保存原始值。第一階段只處理文字。
