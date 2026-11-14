@@ -24,3 +24,4 @@ logs/
 __pycache__/
 *.tsbuildinfo
 .DS_Store
+/tianxin-studio-os-scaffold.zip
