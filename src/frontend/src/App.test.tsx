@@ -12,6 +12,15 @@ const task = {
   updated_at: "2026-11-14T03:00:00Z",
 };
 
+const editableTask = {
+  ...task,
+  description: "目前描述",
+  department: "DEVELOPMENT",
+  assigned_ai: "CODEX",
+  priority: "HIGH",
+  due_date: "2026-12-31",
+};
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -725,6 +734,257 @@ describe("task center", () => {
     expect(await screen.findByText("沒有符合目前篩選條件的任務。")).toBeInTheDocument();
     expect(screen.queryByText("目前沒有任務，從上方新增第一項工作。")).not.toBeInTheDocument();
     expect(screen.getByText("符合目前條件：0 項")).toBeInTheDocument();
+  });
+
+  it("opens a prefilled editor and cancels without sending an update", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => [editableTask] });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const row = (await screen.findByText(editableTask.title)).closest("li");
+    await user.click(within(row!).getByRole("button", { name: "編輯" }));
+    expect(screen.getByRole("textbox", { name: `編輯任務標題：${editableTask.title}` })).toHaveValue(editableTask.title);
+    expect(screen.getByRole("textbox", { name: "編輯任務描述" })).toHaveValue("目前描述");
+    expect(screen.getByRole("combobox", { name: "編輯部門" })).toHaveValue("DEVELOPMENT");
+    expect(screen.getByRole("combobox", { name: "編輯主要負責 AI" })).toHaveValue("CODEX");
+    expect(screen.getByRole("combobox", { name: "編輯優先級" })).toHaveValue("HIGH");
+    expect(screen.getByLabelText("編輯截止日")).toHaveValue("2026-12-31");
+
+    await user.click(screen.getByRole("button", { name: "取消編輯" }));
+
+    expect(screen.queryByRole("textbox", { name: "編輯任務描述" })).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves all edit fields and reloads the selected filter and sort", async () => {
+    const updatedTask = {
+      ...editableTask,
+      title: "更新後標題",
+      description: "更新後描述",
+      department: "LEGAL",
+      assigned_ai: "CLAUDE",
+      priority: "URGENT",
+      due_date: "2027-01-15",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({ ok: true, json: async () => updatedTask })
+      .mockResolvedValueOnce({ ok: true, json: async () => [updatedTask] });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText(editableTask.title);
+    await user.selectOptions(screen.getByRole("combobox", { name: "狀態篩選" }), "TODO");
+    await user.selectOptions(screen.getByRole("combobox", { name: "排序欄位" }), "due_date");
+    await user.selectOptions(screen.getByRole("combobox", { name: "排序方向" }), "desc");
+    const row = (await screen.findByText(editableTask.title)).closest("li");
+    await user.click(within(row!).getByRole("button", { name: "編輯" }));
+    await user.clear(screen.getByRole("textbox", { name: `編輯任務標題：${editableTask.title}` }));
+    await user.type(screen.getByRole("textbox", { name: `編輯任務標題：${editableTask.title}` }), "更新後標題");
+    await user.clear(screen.getByRole("textbox", { name: "編輯任務描述" }));
+    await user.type(screen.getByRole("textbox", { name: "編輯任務描述" }), "更新後描述");
+    await user.selectOptions(screen.getByRole("combobox", { name: "編輯部門" }), "LEGAL");
+    await user.selectOptions(screen.getByRole("combobox", { name: "編輯主要負責 AI" }), "CLAUDE");
+    await user.selectOptions(screen.getByRole("combobox", { name: "編輯優先級" }), "URGENT");
+    await user.clear(screen.getByLabelText("編輯截止日"));
+    await user.type(screen.getByLabelText("編輯截止日"), "2027-01-15");
+    await user.click(screen.getByRole("button", { name: "儲存編輯" }));
+
+    expect(await screen.findByText("更新後標題")).toBeInTheDocument();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+    expect(fetchMock.mock.calls[4]).toEqual([
+      "http://127.0.0.1:8000/api/tasks/task-1",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          title: "更新後標題",
+          description: "更新後描述",
+          department: "LEGAL",
+          primary_ai: "CLAUDE",
+          priority: "URGENT",
+          due_date: "2027-01-15",
+        }),
+      }),
+    ]);
+    const refreshedUrl = new URL(String(fetchMock.mock.calls[5][0]));
+    expect(refreshedUrl.searchParams.get("status")).toBe("TODO");
+    expect(refreshedUrl.searchParams.get("sort_by")).toBe("due_date");
+    expect(refreshedUrl.searchParams.get("order")).toBe("desc");
+  });
+
+  it("holds an edit for redaction review and resubmits the unchanged draft", async () => {
+    const candidate = {
+      field_name: "description",
+      start_position: 7,
+      end_position: 14,
+      suspected_type: "EMAIL",
+    };
+    const updatedTask = { ...editableTask, description: "Email: [REDACTED_EMAIL]" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          detail: { code: "SENSITIVE_CANDIDATES", candidates: [candidate] },
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => updatedTask })
+      .mockResolvedValueOnce({ ok: true, json: async () => [updatedTask] });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const row = (await screen.findByText(editableTask.title)).closest("li");
+    await user.click(within(row!).getByRole("button", { name: "編輯" }));
+    const description = screen.getByRole("textbox", { name: "編輯任務描述" });
+    await user.clear(description);
+    await user.type(description, "Email: broken@");
+    await user.click(screen.getByRole("button", { name: "儲存編輯" }));
+    expect(await screen.findByText(/候選原文不會顯示/)).toBeInTheDocument();
+    expect(description).toHaveValue("Email: broken@");
+    const choice = screen.getByRole("combobox", { name: /處理方式：描述候選 1/ });
+    await user.selectOptions(choice, "[REDACTED_EMAIL]");
+    await user.click(screen.getByRole("button", { name: "依選擇處理並儲存" }));
+
+    expect(await screen.findByText("Email: [REDACTED_EMAIL]")).toBeInTheDocument();
+    const sentBody = JSON.parse(fetchMock.mock.calls[2][1].body as string);
+    expect(sentBody.description).toBe("Email: broken@");
+    expect(sentBody.redaction_decisions).toEqual([
+      {
+        field_name: "description",
+        start_position: 7,
+        end_position: 14,
+        action: "[REDACTED_EMAIL]",
+        keep_original_confirmed: false,
+      },
+    ]);
+  });
+
+  it("requires separate confirmation before keeping a candidate in an edit", async () => {
+    const candidate = {
+      field_name: "description",
+      start_position: 5,
+      end_position: 14,
+      suspected_type: "UNCERTAIN",
+    };
+    const updatedTask = { ...editableTask, description: "文件代碼 AB1234567" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          detail: { code: "SENSITIVE_CANDIDATES", candidates: [candidate] },
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => updatedTask })
+      .mockResolvedValueOnce({ ok: true, json: async () => [updatedTask] });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const row = (await screen.findByText(editableTask.title)).closest("li");
+    await user.click(within(row!).getByRole("button", { name: "編輯" }));
+    const description = screen.getByRole("textbox", { name: "編輯任務描述" });
+    await user.clear(description);
+    await user.type(description, "文件代碼 AB1234567");
+    await user.click(screen.getByRole("button", { name: "儲存編輯" }));
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "處理方式：描述候選 1" }),
+      "KEEP_ORIGINAL",
+    );
+    await user.click(screen.getByRole("button", { name: "依選擇處理並儲存" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("明確確認保留原文");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("checkbox", { name: "確認保留原文：描述候選 1" }));
+    await user.click(screen.getByRole("button", { name: "依選擇處理並儲存" }));
+
+    expect(await screen.findByText("文件代碼 AB1234567")).toBeInTheDocument();
+    const sentBody = JSON.parse(fetchMock.mock.calls[2][1].body as string);
+    expect(sentBody.redaction_decisions[0]).toMatchObject({
+      action: "KEEP_ORIGINAL",
+      keep_original_confirmed: true,
+    });
+  });
+
+  it("keeps the edit draft and shows a safe error when saving fails", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({ detail: "private backend data" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const row = (await screen.findByText(editableTask.title)).closest("li");
+    await user.click(within(row!).getByRole("button", { name: "編輯" }));
+    const title = screen.getByRole("textbox", { name: `編輯任務標題：${editableTask.title}` });
+    await user.clear(title);
+    await user.type(title, "待重試的新標題");
+    await user.click(screen.getByRole("button", { name: "儲存編輯" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("無法儲存任務編輯");
+    expect(alert).not.toHaveTextContent("private backend data");
+    expect(title).toHaveValue("待重試的新標題");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires archive confirmation, preserves current query, and removes the task after success", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({ ok: true, status: 204 })
+      .mockResolvedValueOnce({ ok: true, json: async () => [] });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByText(editableTask.title);
+    await user.selectOptions(screen.getByRole("combobox", { name: "部門篩選" }), "DEVELOPMENT");
+    await user.selectOptions(screen.getByRole("combobox", { name: "排序欄位" }), "priority");
+    const row = (await screen.findByText(editableTask.title)).closest("li");
+    await user.click(within(row!).getByRole("button", { name: "封存" }));
+    expect(screen.getByText(/封存後會從一般任務清單移除/)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await user.click(screen.getByRole("button", { name: "取消封存" }));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    await user.click(within(row!).getByRole("button", { name: "封存" }));
+    await user.click(screen.getByRole("button", { name: "確認封存" }));
+    expect(await screen.findByText("沒有符合目前篩選條件的任務。")).toBeInTheDocument();
+    expect(fetchMock.mock.calls[3][0]).toBe("http://127.0.0.1:8000/api/tasks/task-1/archive");
+    expect(fetchMock.mock.calls[3][1]).toMatchObject({ method: "PATCH" });
+    const refreshedUrl = new URL(String(fetchMock.mock.calls[4][0]));
+    expect(refreshedUrl.searchParams.get("department")).toBe("DEVELOPMENT");
+    expect(refreshedUrl.searchParams.get("sort_by")).toBe("priority");
+  });
+
+  it("keeps the task visible and reports a safe message when archive fails", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [editableTask] })
+      .mockResolvedValueOnce({ ok: false, status: 500 });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const row = (await screen.findByText(editableTask.title)).closest("li");
+    await user.click(within(row!).getByRole("button", { name: "封存" }));
+    await user.click(screen.getByRole("button", { name: "確認封存" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("無法封存任務");
+    expect(screen.getByText(editableTask.title)).toBeInTheDocument();
   });
 
   it("refreshes with current filters after creation without inserting a non-matching task", async () => {

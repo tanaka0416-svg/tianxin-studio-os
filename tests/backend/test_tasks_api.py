@@ -628,6 +628,359 @@ def test_list_applies_filters_before_requested_sort(tmp_path):
         ) == ["filter-c", "filter-a"]
 
 
+def test_patch_updates_only_submitted_fields_and_accepts_primary_ai_alias(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "title": "原始標題",
+                "description": "保留描述",
+                "department": "DEVELOPMENT",
+                "assigned_ai": "CODEX",
+                "priority": "MEDIUM",
+                "due_date": "2026-12-01",
+            },
+        ).json()
+
+        response = client.patch(
+            f"/api/tasks/{created['id']}",
+            json={
+                "department": "LEGAL",
+                "primary_ai": "CLAUDE",
+                "priority": "URGENT",
+                "due_date": "2027-01-15",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["department"] == "LEGAL"
+    assert response.json()["assigned_ai"] == "CLAUDE"
+    assert response.json()["title"] == "原始標題"
+    assert response.json()["description"] == "保留描述"
+    assert response.json()["priority"] == "URGENT"
+    assert response.json()["due_date"] == "2027-01-15"
+
+
+def test_patch_null_description_clears_only_description(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/tasks",
+            json={"title": "原標題", "description": "原描述", "priority": "HIGH"},
+        ).json()
+        response = client.patch(
+            f"/api/tasks/{created['id']}", json={"description": None}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["description"] is None
+    assert response.json()["title"] == "原標題"
+    assert response.json()["priority"] == "HIGH"
+
+
+def test_patch_empty_body_is_rejected_without_mutating_task(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        created = client.post("/api/tasks", json={"title": "不得改動"}).json()
+        response = client.patch(f"/api/tasks/{created['id']}", json={})
+        listed = client.get("/api/tasks").json()
+
+    assert response.status_code == 422
+    assert listed[0]["title"] == "不得改動"
+
+
+def test_patch_validation_failure_does_not_mutate_task(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        created = client.post("/api/tasks", json={"title": "保留原值"}).json()
+        response = client.patch(
+            f"/api/tasks/{created['id']}",
+            json={"title": "新標題", "priority": "NOT_A_PRIORITY"},
+        )
+        listed = client.get("/api/tasks").json()
+
+    assert response.status_code == 422
+    assert listed[0]["title"] == "保留原值"
+    assert listed[0]["priority"] == "MEDIUM"
+
+
+def test_patch_missing_task_returns_404(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        response = client.patch(
+            "/api/tasks/missing-task", json={"title": "不會建立任務"}
+        )
+
+    assert response.status_code == 404
+
+
+def test_patch_redacts_supported_sensitive_title_before_persistence(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        created = client.post("/api/tasks", json={"title": "起始標題"}).json()
+        response = client.patch(
+            f"/api/tasks/{created['id']}",
+            json={"title": "聯絡 person@example.com"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["title"] == "聯絡 [REDACTED_EMAIL]"
+    with app.state.session_factory() as session:
+        task_row = session.get(Task, created["id"])
+        event = session.query(RedactionEvent).one()
+        assert task_row.title == "聯絡 [REDACTED_EMAIL]"
+        assert event.field_name == "title"
+        assert event.redaction_type == "EMAIL"
+        assert not hasattr(event, "original_value")
+
+
+def test_patch_redacts_supported_sensitive_description_before_persistence(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        created = client.post("/api/tasks", json={"title": "起始標題"}).json()
+        response = client.patch(
+            f"/api/tasks/{created['id']}",
+            json={"description": "請回覆 0912345678"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["description"] == "請回覆 [REDACTED_PHONE]"
+    with app.state.session_factory() as session:
+        event = session.query(RedactionEvent).one()
+        assert event.field_name == "description"
+        assert event.redaction_type == "PHONE"
+        assert not hasattr(event, "original_value")
+
+
+def test_uncertain_patch_candidate_does_not_change_task_before_decision(tmp_path, caplog):
+    app = make_app(tmp_path)
+    raw_candidate = "護照號碼：格式不明"
+    with TestClient(app) as client, caplog.at_level(logging.DEBUG):
+        created = client.post("/api/tasks", json={"title": "原標題"}).json()
+        response = client.patch(
+            f"/api/tasks/{created['id']}", json={"description": raw_candidate}
+        )
+        current = client.get("/api/tasks").json()[0]
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "SENSITIVE_CANDIDATES"
+    assert raw_candidate not in response.text
+    assert raw_candidate not in caplog.text
+    assert current["title"] == "原標題"
+    assert current["description"] is None
+    with app.state.session_factory() as session:
+        event = session.query(RedactionEvent).one()
+        assert event.field_name == "description"
+        assert event.redaction_type == "UNCERTAIN"
+        assert not hasattr(event, "original_value")
+
+
+def test_uncertain_patch_prevents_other_redacted_fields_from_partial_update(tmp_path):
+    app = make_app(tmp_path)
+    raw_candidate = "Email: broken@"
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/tasks", json={"title": "原始標題", "description": "原始描述"}
+        ).json()
+        response = client.patch(
+            f"/api/tasks/{created['id']}",
+            json={
+                "title": "聯絡 person@example.com",
+                "description": raw_candidate,
+            },
+        )
+        current = client.get("/api/tasks").json()[0]
+
+    assert response.status_code == 422
+    assert current["title"] == "原始標題"
+    assert current["description"] == "原始描述"
+    with app.state.session_factory() as session:
+        events = session.query(RedactionEvent).all()
+        assert len(events) == 1
+        assert events[0].redaction_type == "UNCERTAIN"
+        assert not hasattr(events[0], "original_value")
+
+
+def test_patch_candidate_is_saved_only_after_redaction_decision(tmp_path):
+    app = make_app(tmp_path)
+    raw_description = "Email: broken@"
+    with TestClient(app) as client:
+        created = client.post("/api/tasks", json={"title": "起始標題"}).json()
+        intercepted = client.patch(
+            f"/api/tasks/{created['id']}",
+            json={"description": raw_description},
+        )
+        assert intercepted.status_code == 422
+        current = client.get("/api/tasks").json()[0]
+        assert current["description"] is None
+        candidate = intercepted.json()["detail"]["candidates"][0]
+
+        submitted = client.patch(
+            f"/api/tasks/{created['id']}",
+            json={
+                "description": raw_description,
+                "redaction_decisions": [
+                    {
+                        "field_name": candidate["field_name"],
+                        "start_position": candidate["start_position"],
+                        "end_position": candidate["end_position"],
+                        "action": "[REDACTED]",
+                        "keep_original_confirmed": False,
+                    }
+                ],
+            },
+        )
+
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["description"] == "Email: [REDACTED]"
+
+
+def test_patch_keep_original_requires_explicit_confirmation(tmp_path):
+    app = make_app(tmp_path)
+    payload = {
+        "description": "Email: broken@",
+        "redaction_decisions": [
+            {
+                "field_name": "description",
+                "start_position": 7,
+                "end_position": 14,
+                "action": "KEEP_ORIGINAL",
+            }
+        ],
+    }
+    with TestClient(app) as client:
+        created = client.post("/api/tasks", json={"title": "起始標題"}).json()
+        response = client.patch(f"/api/tasks/{created['id']}", json=payload)
+        current = client.get("/api/tasks").json()[0]
+
+    assert response.status_code == 422
+    assert current["description"] is None
+
+
+def test_patch_confirmed_keep_original_is_audited_without_copying_source_to_event(tmp_path):
+    app = make_app(tmp_path)
+    raw_candidate = "Email: broken@"
+    payload = {
+        "description": raw_candidate,
+        "redaction_decisions": [
+            {
+                "field_name": "description",
+                "start_position": 7,
+                "end_position": 14,
+                "action": "KEEP_ORIGINAL",
+                "keep_original_confirmed": True,
+            }
+        ],
+    }
+    with TestClient(app) as client:
+        created = client.post("/api/tasks", json={"title": "起始標題"}).json()
+        response = client.patch(f"/api/tasks/{created['id']}", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["description"] == raw_candidate
+    with app.state.session_factory() as session:
+        event = session.query(RedactionEvent).one()
+        assert event.redaction_type == "MANUAL_KEEP_CONFIRMED"
+        assert event.original_length == len("broken@")
+        assert not hasattr(event, "original_value")
+
+
+def test_archive_keeps_task_data_and_removes_it_from_all_active_queries(tmp_path):
+    app = make_app(tmp_path)
+    seed_tasks(app, filter_tasks())
+    with TestClient(app) as client:
+        response = client.patch("/api/tasks/filter-a/archive")
+        assert response.status_code == 204
+        assert client.get("/api/tasks").status_code == 200
+        assert listed_ids(client) == ["filter-b", "filter-c", "filter-d"]
+        assert listed_ids(client, status="TODO") == ["filter-c"]
+        assert listed_ids(client, department="DEVELOPMENT") == ["filter-c"]
+        assert listed_ids(client, assigned_ai="CODEX") == ["filter-d"]
+        assert listed_ids(client, priority="HIGH") == []
+        assert listed_ids(client, sort_by="created_at", order="desc") == [
+            "filter-d", "filter-c", "filter-b"
+        ]
+        assert listed_ids(client, sort_by="updated_at", order="asc") == [
+            "filter-d", "filter-c", "filter-b"
+        ]
+        assert listed_ids(client, sort_by="due_date", order="asc") == [
+            "filter-d", "filter-c", "filter-b"
+        ]
+        assert listed_ids(client, sort_by="priority", order="desc") == [
+            "filter-c", "filter-d", "filter-b"
+        ]
+        for sort_by in ("created_at", "updated_at", "due_date", "priority"):
+            for order in ("asc", "desc"):
+                assert "filter-a" not in listed_ids(
+                    client, sort_by=sort_by, order=order
+                )
+    with app.state.session_factory() as session:
+        archived = session.get(Task, "filter-a")
+        assert archived is not None
+        assert archived.archived_at is not None
+        assert archived.archived_at.tzinfo is None or archived.archived_at.utcoffset().total_seconds() == 0
+
+
+def test_archive_repeat_does_not_rewrite_timestamp_and_status_update_is_rejected(tmp_path):
+    app = make_app(tmp_path)
+    task = synthetic_task(
+        "archive-repeat", created_day=1, updated_day=1, due_day=1, priority="MEDIUM"
+    )
+    seed_tasks(app, [task])
+    with TestClient(app) as client:
+        first = client.patch(f"/api/tasks/{task.id}/archive")
+        with app.state.session_factory() as session:
+            archived_at = session.get(Task, task.id).archived_at
+        second = client.patch(f"/api/tasks/{task.id}/archive")
+        status_response = client.patch(
+            f"/api/tasks/{task.id}/status", json={"status": "DONE"}
+        )
+
+    assert first.status_code == second.status_code == 204
+    assert status_response.status_code == 404
+    with app.state.session_factory() as session:
+        assert session.get(Task, task.id).archived_at == archived_at
+
+
+def test_archive_missing_task_returns_404(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        response = client.patch("/api/tasks/missing-task/archive")
+
+    assert response.status_code == 404
+
+
+def test_archived_task_cannot_be_edited(tmp_path):
+    app = make_app(tmp_path)
+    task = synthetic_task(
+        "archive-edit", created_day=1, updated_day=1, due_day=1, priority="MEDIUM"
+    )
+    seed_tasks(app, [task])
+    with TestClient(app) as client:
+        assert client.patch(f"/api/tasks/{task.id}/archive").status_code == 204
+        response = client.patch(f"/api/tasks/{task.id}", json={"title": "不得改變"})
+
+    assert response.status_code == 404
+    with app.state.session_factory() as session:
+        assert session.get(Task, task.id).title == task.title
+
+
+def test_patch_rejects_status_and_unknown_fields_without_mutating_task(tmp_path):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        created = client.post("/api/tasks", json={"title": "狀態不可由編輯變更"}).json()
+        response = client.patch(
+            f"/api/tasks/{created['id']}",
+            json={"title": "更新標題", "status": "DONE", "unexpected": "value"},
+        )
+        current = client.get("/api/tasks").json()[0]
+
+    assert response.status_code == 422
+    assert current["title"] == "狀態不可由編輯變更"
+    assert current["status"] == "TODO"
+
+
 def test_uncertain_candidates_return_safe_structured_422_and_event_metadata(tmp_path, caplog):
     app = make_app(tmp_path)
     raw_title = "Email: broken@"

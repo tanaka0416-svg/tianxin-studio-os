@@ -106,12 +106,13 @@ def test_upgrade_preserves_all_legacy_tasks_and_redaction_records(tmp_path):
         "assigned_ai",
         "priority",
         "due_date",
+        "archived_at",
     )
     assert columns(database, "redaction_events") == LEGACY_REDACTION_COLUMNS
     after_tasks = rows(database, "tasks")
     assert [row[:5] for row in after_tasks] == before_tasks
     assert all(row[5:8] == (None, None, None) for row in after_tasks)
-    assert all(row[8] == "MEDIUM" and row[9] is None for row in after_tasks)
+    assert all(row[8] == "MEDIUM" and row[9:] == (None, None) for row in after_tasks)
     assert rows(database, "redaction_events") == before_events
     assert {row[2] for row in after_tasks} == set(STATUSES)
     assert integrity(database) == "ok"
@@ -130,6 +131,7 @@ def test_upgrade_initializes_an_explicit_empty_database(tmp_path):
         "assigned_ai",
         "priority",
         "due_date",
+        "archived_at",
     )
     assert columns(database, "redaction_events") == LEGACY_REDACTION_COLUMNS
     with sqlite3.connect(database) as connection:
@@ -229,3 +231,77 @@ def test_upgrade_rejects_relative_database_paths(tmp_path):
     MigrationError, _, _, upgrade_database, _ = migration_api()
     with pytest.raises(MigrationError, match="absolute"):
         upgrade_database("relative.sqlite3")
+
+
+def create_metadata_database(path):
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE tasks (
+                id VARCHAR(36) NOT NULL,
+                title VARCHAR NOT NULL,
+                status VARCHAR(20) NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                description TEXT,
+                department TEXT,
+                assigned_ai TEXT,
+                priority TEXT DEFAULT 'MEDIUM' NOT NULL,
+                due_date DATE,
+                CONSTRAINT ck_tasks_status CHECK (
+                    status IN ('TODO', 'IN_PROGRESS', 'REVIEW', 'BLOCKED', 'RETURNED', 'DONE')
+                ),
+                PRIMARY KEY (id)
+            );
+            CREATE TABLE redaction_events (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                field_name VARCHAR(32) NOT NULL,
+                original_length INTEGER NOT NULL,
+                redaction_type VARCHAR(32) NOT NULL,
+                start_position INTEGER NOT NULL,
+                end_position INTEGER NOT NULL,
+                created_at DATETIME NOT NULL
+            );
+            CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
+            INSERT INTO alembic_version VALUES ('0002_task_metadata');
+            INSERT INTO tasks VALUES (
+                'synthetic-0002', 'synthetic task', 'TODO',
+                '2026-11-15T00:00:00+00:00', '2026-11-15T00:00:00+00:00',
+                'synthetic description', 'DEVELOPMENT', 'CODEX', 'HIGH', '2026-11-20'
+            );
+            INSERT INTO redaction_events VALUES (
+                'synthetic-event', 'title', 6, 'EMAIL', 1, 7,
+                '2026-11-15T00:00:00+00:00'
+            );
+            """
+        )
+
+
+def test_upgrade_0002_adds_nullable_archived_at_without_changing_synthetic_data(tmp_path):
+    _, _, _, upgrade_database, _ = migration_api()
+    database = tmp_path / "metadata.sqlite3"
+    create_metadata_database(database)
+    before_task = rows(database, "tasks")
+    before_events = rows(database, "redaction_events")
+
+    upgrade_database(database)
+
+    assert rows(database, "tasks") == [before_task[0] + (None,)]
+    assert rows(database, "redaction_events") == before_events
+    task_columns = columns(database, "tasks")
+    assert task_columns[-1] == "archived_at"
+    with sqlite3.connect(database) as connection:
+        archived_column = connection.execute(
+            "PRAGMA table_info(tasks)"
+        ).fetchall()[-1]
+        assert archived_column[2].upper() == "DATETIME"
+        assert archived_column[3] == 0
+        assert archived_column[4] is None
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()[0] == "0003_task_archiving"
+        assert not any(
+            "archived_at" in index[1].lower()
+            for index in connection.execute("PRAGMA index_list(tasks)")
+        )
+    assert integrity(database) == "ok"

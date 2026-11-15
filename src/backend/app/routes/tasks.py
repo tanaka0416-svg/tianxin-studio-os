@@ -1,6 +1,8 @@
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from sqlalchemy import case, select
 
 from app.models.task import RedactionEvent, Task
@@ -13,6 +15,7 @@ from app.schemas.task import (
     TaskRead,
     TaskStatus,
     TaskStatusUpdate,
+    TaskUpdate,
 )
 from app.services.redaction_gate import (
     InvalidRedactionDecision,
@@ -161,7 +164,7 @@ def list_tasks(
                 detail="查詢參數無效；每個參數只能提供一個值。",
             )
 
-    statement = select(Task)
+    statement = select(Task).where(Task.archived_at.is_(None))
     if status_filter is not None:
         statement = statement.where(Task.status == status_filter.value)
     if department is not None:
@@ -195,10 +198,146 @@ def list_tasks(
         return list(session.scalars(statement.order_by(*ordering)))
 
 
+@router.patch("/{task_id}", response_model=TaskRead)
+def update_task(task_id: str, payload: TaskUpdate, request: Request):
+    with request.app.state.session_factory() as session:
+        task = session.scalar(
+            select(Task).where(Task.id == task_id, Task.archived_at.is_(None))
+        )
+        if task is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到任務。")
+
+        submitted = payload.model_dump(exclude_unset=True)
+        decisions_by_field: dict[str, list[RedactionDecisionInput]] = {
+            "title": [],
+            "description": [],
+        }
+        submitted.pop("redaction_decisions", None)
+        for decision in payload.redaction_decisions:
+            decisions_by_field[decision.field_name].append(decision)
+
+        invalid_decision = any(
+            decisions_by_field[field_name] and field_name not in submitted
+            for field_name in decisions_by_field
+        )
+        safe_text_fields = {}
+        redaction_records = []
+        uncertain_records = []
+        for field_name in ("title", "description"):
+            if field_name not in submitted:
+                continue
+            value = submitted[field_name]
+            field_decisions = decisions_by_field[field_name]
+            if value is None:
+                if field_decisions:
+                    invalid_decision = True
+                safe_text_fields[field_name] = None
+                continue
+            try:
+                result = redact_text(
+                    value,
+                    field_name=field_name,
+                    decisions=tuple(
+                        RedactionDecision(
+                            field_name=decision.field_name,
+                            start_position=decision.start_position,
+                            end_position=decision.end_position,
+                            action=decision.action,
+                            keep_original_confirmed=decision.keep_original_confirmed,
+                        )
+                        for decision in field_decisions
+                    ),
+                )
+                safe_text_fields[field_name] = result.text
+                redaction_records.extend(result.records)
+            except UncertainSensitiveData as error:
+                uncertain_records.extend(
+                    record
+                    for record in error.records
+                    if not any(
+                        known.field_name == field_name
+                        and known.start_position == record.start_position
+                        and known.end_position == record.end_position
+                        for known in uncertain_records
+                    )
+                )
+            except InvalidRedactionDecision:
+                invalid_decision = True
+                try:
+                    redact_text(value, field_name=field_name)
+                except UncertainSensitiveData as error:
+                    uncertain_records.extend(
+                        record
+                        for record in error.records
+                        if not any(
+                            known.field_name == field_name
+                            and known.start_position == record.start_position
+                            and known.end_position == record.end_position
+                            for known in uncertain_records
+                        )
+                    )
+
+        if uncertain_records:
+            _save_records(session, uncertain_records)
+            session.commit()
+            if invalid_decision:
+                raise HTTPException(
+                    status_code=422,
+                    detail="脫敏處理選擇無效；請重新檢查候選內容。",
+                ) from None
+            raise HTTPException(
+                    status_code=422,
+                detail={
+                    "code": "SENSITIVE_CANDIDATES",
+                    "message": "任務文字包含需要人工選擇處理方式的候選內容。",
+                    "candidates": [
+                        {
+                            "field_name": record.field_name,
+                            "start_position": record.start_position,
+                            "end_position": record.end_position,
+                            "suspected_type": record.suspected_type or "UNCERTAIN",
+                        }
+                        for record in uncertain_records
+                    ],
+                    "options": REDACTION_ACTIONS,
+                },
+            ) from None
+        if invalid_decision:
+            raise HTTPException(
+                status_code=422,
+                detail="脫敏處理選擇無效；請重新檢查候選內容。",
+            ) from None
+
+        submitted.update(safe_text_fields)
+        for field_name in ("department", "assigned_ai", "priority"):
+            if field_name in submitted and submitted[field_name] is not None:
+                submitted[field_name] = submitted[field_name].value
+        for field_name, value in submitted.items():
+            setattr(task, field_name, value)
+        _save_records(session, redaction_records)
+        session.commit()
+        session.refresh(task)
+        return task
+
+
+@router.patch("/{task_id}/archive", status_code=status.HTTP_204_NO_CONTENT)
+def archive_task(task_id: str, request: Request):
+    with request.app.state.session_factory() as session:
+        task = session.get(Task, task_id)
+        if task is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到任務。")
+        if task.archived_at is None:
+            task.archived_at = datetime.now(timezone.utc)
+            session.commit()
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.patch("/{task_id}/status", response_model=TaskRead)
 def update_task_status(task_id: str, payload: TaskStatusUpdate, request: Request):
     with request.app.state.session_factory() as session:
-        task = session.get(Task, task_id)
+        task = session.scalar(
+            select(Task).where(Task.id == task_id, Task.archived_at.is_(None))
+        )
         if task is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="找不到任務。")
         task.status = payload.status.value

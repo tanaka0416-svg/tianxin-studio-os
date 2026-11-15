@@ -32,6 +32,9 @@ class Task(Base):
         Text, nullable=False, default="MEDIUM", server_default="MEDIUM"
     )
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now
