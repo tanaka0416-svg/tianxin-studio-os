@@ -38,10 +38,23 @@ const priorities = [
   { value: "URGENT", label: "緊急" },
 ] as const;
 
+const redactionOptions = [
+  { value: "[REDACTED]", label: "[REDACTED]" },
+  { value: "[REDACTED_EMAIL]", label: "[REDACTED_EMAIL]" },
+  { value: "[REDACTED_PHONE]", label: "[REDACTED_PHONE]" },
+  { value: "[REDACTED_ID]", label: "[REDACTED_ID]" },
+  { value: "[REDACTED_PASSPORT]", label: "[REDACTED_PASSPORT]" },
+  { value: "[REDACTED_BANK_ACCOUNT]", label: "[REDACTED_BANK_ACCOUNT]" },
+  { value: "[REDACTED_TAX_ID]", label: "[REDACTED_TAX_ID]" },
+  { value: "[REDACTED_CREDIT_CARD]", label: "[REDACTED_CREDIT_CARD]" },
+  { value: "KEEP_ORIGINAL", label: "保留原文（需人工確認）" },
+] as const;
+
 type TaskStatus = (typeof statuses)[number]["value"];
 type DepartmentCode = (typeof departments)[number]["value"];
 type AssignedAICode = (typeof assignedAIs)[number]["value"];
 type PriorityCode = (typeof priorities)[number]["value"];
+type RedactionAction = (typeof redactionOptions)[number]["value"];
 type SortBy = "created_at" | "updated_at" | "due_date" | "priority";
 type SortOrder = "asc" | "desc";
 type TaskQuery = {
@@ -83,6 +96,29 @@ type TaskDraft = {
   priority: PriorityCode;
   dueDate: string;
 };
+
+type RedactionCandidate = {
+  field_name: "title" | "description";
+  start_position: number;
+  end_position: number;
+  suspected_type: string;
+};
+
+type RedactionDecision = Pick<
+  RedactionCandidate,
+  "field_name" | "start_position" | "end_position"
+> & {
+  action: RedactionAction;
+  keep_original_confirmed: boolean;
+};
+
+function redactionCandidateKey(candidate: RedactionCandidate): string {
+  return `${candidate.field_name}:${candidate.start_position}:${candidate.end_position}`;
+}
+
+function redactionFieldLabel(fieldName: RedactionCandidate["field_name"]): string {
+  return fieldName === "title" ? "標題" : "描述";
+}
 
 function emptyDraft(): TaskDraft {
   return {
@@ -135,6 +171,13 @@ export default function App() {
   const [listLoadFailed, setListLoadFailed] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [outcomeUnknown, setOutcomeUnknown] = useState(false);
+  const [redactionCandidates, setRedactionCandidates] = useState<RedactionCandidate[]>([]);
+  const [redactionSelections, setRedactionSelections] = useState<
+    Record<string, RedactionAction | "">
+  >({});
+  const [keepOriginalConfirmations, setKeepOriginalConfirmations] = useState<
+    Record<string, boolean>
+  >({});
   const [expandedDescriptions, setExpandedDescriptions] = useState<Set<string>>(
     () => new Set(),
   );
@@ -211,6 +254,19 @@ export default function App() {
 
   function updateDraft<K extends keyof TaskDraft>(key: K, value: TaskDraft[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
+    if (key === "title" || key === "description") {
+      setRedactionCandidates([]);
+      setRedactionSelections({});
+      setKeepOriginalConfirmations({});
+      setError("");
+    }
+  }
+
+  function cancelRedactionReview() {
+    setRedactionCandidates([]);
+    setRedactionSelections({});
+    setKeepOriginalConfirmations({});
+    setError("");
   }
 
   function refreshTasks() {
@@ -224,6 +280,28 @@ export default function App() {
 
     const submittedTitle = draft.title.trim();
     if (!submittedTitle) return;
+
+    const redactionDecisions: RedactionDecision[] = [];
+    for (const candidate of redactionCandidates) {
+      const key = redactionCandidateKey(candidate);
+      const action = redactionSelections[key];
+      if (!action) {
+        setError("請先為每個疑似內容選擇處理方式，再建立任務。");
+        return;
+      }
+      const keepOriginalConfirmed = keepOriginalConfirmations[key] === true;
+      if (action === "KEEP_ORIGINAL" && !keepOriginalConfirmed) {
+        setError("請先明確確認保留原文，再建立任務。");
+        return;
+      }
+      redactionDecisions.push({
+        field_name: candidate.field_name,
+        start_position: candidate.start_position,
+        end_position: candidate.end_position,
+        action,
+        keep_original_confirmed: keepOriginalConfirmed,
+      });
+    }
 
     savingRef.current = true;
     setSaving(true);
@@ -242,11 +320,47 @@ export default function App() {
           assigned_ai: draft.assignedAI || null,
           priority: draft.priority,
           due_date: draft.dueDate || null,
+          ...(redactionDecisions.length > 0
+            ? { redaction_decisions: redactionDecisions }
+            : {}),
         }),
       });
 
       if (response.status === 422) {
+        const responseBody = await response.json().catch(() => null) as {
+          detail?: {
+            code?: string;
+            candidates?: unknown;
+          };
+        } | null;
+        const detail = responseBody?.detail;
+        const candidates = detail?.candidates;
+        if (
+          detail?.code === "SENSITIVE_CANDIDATES"
+          && Array.isArray(candidates)
+          && candidates.length > 0
+        ) {
+          const validCandidates = candidates.filter((candidate): candidate is RedactionCandidate =>
+            candidate !== null
+            && typeof candidate === "object"
+            && (candidate as RedactionCandidate).field_name !== undefined
+            && ["title", "description"].includes((candidate as RedactionCandidate).field_name)
+            && Number.isInteger((candidate as RedactionCandidate).start_position)
+            && Number.isInteger((candidate as RedactionCandidate).end_position)
+            && (candidate as RedactionCandidate).start_position >= 0
+            && (candidate as RedactionCandidate).end_position > (candidate as RedactionCandidate).start_position
+            && typeof (candidate as RedactionCandidate).suspected_type === "string",
+          );
+          if (validCandidates.length > 0) {
+            setRedactionCandidates(validCandidates);
+            setRedactionSelections({});
+            setKeepOriginalConfirmations({});
+            setError("發現需要選擇處理方式的疑似內容。候選原文不會顯示在提示中。");
+            return;
+          }
+        }
         setDraft((current) => ({ ...current, title: "", description: "" }));
+        cancelRedactionReview();
         setError("內容未通過伺服器檢查，已清除標題與描述，請重新輸入。");
         return;
       }
@@ -257,6 +371,7 @@ export default function App() {
 
       await response.json();
       setDraft(emptyDraft());
+      cancelRedactionReview();
       setSuccessMessage("任務已建立。");
       await loadTasks(queryRef.current);
     } catch {
@@ -434,10 +549,78 @@ export default function App() {
               </div>
             </div>
 
+            {redactionCandidates.length > 0 && (
+              <section className="redaction-review" aria-labelledby="redaction-review-title">
+                <div className="redaction-review-heading">
+                  <div>
+                    <h3 id="redaction-review-title">處理疑似敏感內容</h3>
+                    <p>請依欄位、字元位置與疑似類型選擇處理方式；提示不會顯示候選原文。</p>
+                  </div>
+                  <button type="button" className="secondary-button" onClick={cancelRedactionReview}>
+                    取消處理選擇
+                  </button>
+                </div>
+                <div className="redaction-candidate-list">
+                  {redactionCandidates.map((candidate, index) => {
+                    const key = redactionCandidateKey(candidate);
+                    const fieldLabel = redactionFieldLabel(candidate.field_name);
+                    const choiceId = `redaction-choice-${index}`;
+                    const action = redactionSelections[key] ?? "";
+                    return (
+                      <div className="redaction-candidate" key={key}>
+                        <p className="redaction-candidate-location">
+                          {fieldLabel}第 {candidate.start_position + 1}–{candidate.end_position} 個字元，
+                          疑似類型：{candidate.suspected_type}
+                        </p>
+                        <label htmlFor={choiceId}>
+                          處理方式：{fieldLabel}候選 {index + 1}
+                        </label>
+                        <select
+                          id={choiceId}
+                          value={action}
+                          onChange={(event) => {
+                            const nextAction = event.target.value as RedactionAction | "";
+                            setRedactionSelections((current) => ({ ...current, [key]: nextAction }));
+                            setKeepOriginalConfirmations((current) => ({ ...current, [key]: false }));
+                            setError("");
+                          }}
+                        >
+                          <option value="">請選擇處理方式</option>
+                          {redactionOptions.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                        {action === "KEEP_ORIGINAL" && (
+                          <label className="keep-original-confirmation">
+                            <input
+                              type="checkbox"
+                              checked={keepOriginalConfirmations[key] === true}
+                              aria-label={`確認保留原文：${fieldLabel}候選 ${index + 1}`}
+                              onChange={(event) => {
+                                setKeepOriginalConfirmations((current) => ({
+                                  ...current,
+                                  [key]: event.target.checked,
+                                }));
+                                setError("");
+                              }}
+                            />
+                            我已確認要保留此候選原文
+                          </label>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="redaction-review-note">
+                  尚未為全部候選選擇方式前不會建立任務；保留原文會留下人工確認事件。
+                </p>
+              </section>
+            )}
+
             <div className="form-actions">
               <p className="privacy-note">標題與描述送出前會由本機後端檢查並遮蔽敏感資料。</p>
               <button type="submit" disabled={saving || !draft.title.trim()}>
-                {saving ? "儲存中…" : "新增任務"}
+                {saving ? "儲存中…" : redactionCandidates.length > 0 ? "依選擇處理並建立" : "新增任務"}
               </button>
             </div>
             <p className="ai-assignment-note">
