@@ -125,3 +125,14 @@
 - 前端測試：`npm test -- --run`，41 項通過；`npx tsc --noEmit` 通過；`npm run build` 通過。
 - 資料庫：本階段未變更 schema，未執行遷移。
 - CEO 本機實測：待 CEO 確認敏感文字處理、非敏感內容、脫敏紀錄追蹤及載入／版本狀況；上述自動測試不代表手動驗收。
+
+## F002-A：脫敏決策閘道驗收紀錄
+
+- 分支：`codex/f002-a-redaction-gateway`
+- 功能提交：`f413e1e feat: add F002-A redaction decision gateway`
+- 狀態：已通過 CEO 手動驗收，整體判定通過
+- 自動驗證：後端聚焦測試 120 項通過；完整後端測試 128 項通過；前端測試 41 項通過；TypeScript 型別檢查通過；前端建置通過；`git diff --check` 通過
+- CEO 手動驗收：自動脫敏、疑似敏感攔截、下拉選項重新送出、保留原文確認、既有功能未回歸、事件不洩漏原文、畫面與服務，均通過
+- 資料庫：未變更 schema，未執行遷移
+- 版本控制：本階段尚未推送
+- 未追蹤證據：`docs/acceptance-evidence/` 截圖與 `docs/handoff/README.md` 已於結案時納入版本控制
