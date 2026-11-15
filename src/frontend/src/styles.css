@@ -69,6 +69,19 @@ h1 { margin: 0; color: #19273d; font-size: clamp(27px, 3vw, 34px); line-height: 
 .form-actions button { min-width: 120px; min-height: 42px; padding: 0 18px; border: 0; border-radius: 7px; background: var(--blue); color: #fff; cursor: pointer; font-size: 13px; font-weight: 600; transition: background .15s ease; }
 .form-actions button:hover:not(:disabled) { background: #2855c7; }
 .form-actions button:disabled { background: #aab8df; cursor: not-allowed; }
+.redaction-review { display: grid; gap: 12px; margin-top: 18px; padding: 15px; border: 1px solid #e8d6a7; border-radius: 8px; background: #fffaf0; }
+.redaction-review-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.redaction-review-heading h3 { margin: 0; color: #5b4925; font-size: 14px; }
+.redaction-review-heading p, .redaction-review-note { margin: 5px 0 0; color: #786844; font-size: 12px; line-height: 1.5; }
+.redaction-candidate-list { display: grid; gap: 9px; }
+.redaction-candidate { display: grid; gap: 8px; padding: 11px; border: 1px solid #eee2c5; border-radius: 7px; background: #fff; }
+.redaction-candidate-location { margin: 0; color: #43536a; font-size: 12px; font-weight: 650; }
+.redaction-candidate > label { color: #59677a; font-size: 12px; }
+.redaction-candidate > select { width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid #dfe5ee; border-radius: 6px; color: var(--ink); background: #fff; font: inherit; font-size: 13px; }
+.keep-original-confirmation { display: flex; align-items: center; gap: 8px; color: #8a3e35 !important; }
+.keep-original-confirmation input { width: 16px; height: 16px; accent-color: #b64c3e; }
+.secondary-button { min-height: 36px; padding: 0 12px; border: 1px solid #d7c79f; border-radius: 6px; background: #fff; color: #65552f; cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.redaction-review-note { margin: 0; }
 .ai-assignment-note { margin: 13px 0 0; color: #6e7b8f; font-size: 11px; line-height: 1.5; }
 .error-message { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 15px 0 0; padding: 11px 13px; border: 1px solid #f2d2ce; border-radius: 7px; background: #fff7f6; color: #a64235; font-size: 13px; }
 .error-message p { margin: 0; line-height: 1.5; }
@@ -130,6 +143,8 @@ h1 { margin: 0; color: #19273d; font-size: clamp(27px, 3vw, 34px); line-height: 
   .form-field-wide { grid-column: auto; }
   .form-actions { align-items: stretch; flex-direction: column; }
   .form-actions button { width: 100%; }
+  .redaction-review-heading { flex-direction: column; }
+  .secondary-button { width: 100%; }
   .error-message { align-items: stretch; flex-direction: column; }
   .error-message button { width: 100%; }
   .task-toolbar { grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px; margin-top: 20px; padding: 13px; }

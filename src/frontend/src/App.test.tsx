@@ -110,25 +110,207 @@ describe("task center", () => {
     ]);
   });
 
-  it("clears an unclassified title after the gateway rejects it", async () => {
+  it("retains an intercepted title and shows candidate metadata without echoing the value", async () => {
+    const candidate = {
+      field_name: "title",
+      start_position: 7,
+      end_position: 14,
+      suspected_type: "EMAIL",
+    };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => [] })
       .mockResolvedValueOnce({
         ok: false,
         status: 422,
-        json: async () => ({ detail: "任務標題包含無法安全分類的資料，未建立任務。" }),
+        json: async () => ({
+          detail: {
+            code: "SENSITIVE_CANDIDATES",
+            message: "安全提示不得含有原文",
+            candidates: [candidate],
+            options: [
+              "[REDACTED]",
+              "[REDACTED_EMAIL]",
+              "[REDACTED_PHONE]",
+              "[REDACTED_ID]",
+              "[REDACTED_PASSPORT]",
+              "[REDACTED_BANK_ACCOUNT]",
+              "[REDACTED_TAX_ID]",
+              "[REDACTED_CREDIT_CARD]",
+              "KEEP_ORIGINAL",
+            ],
+          },
+        }),
       });
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
 
     render(<App />);
     const input = await screen.findByRole("textbox", { name: "任務標題" });
-    await user.type(input, "護照號碼：格式不明");
+    await user.type(input, "Email: broken@");
     await user.click(screen.getByRole("button", { name: "新增任務" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("已清除標題與描述");
-    await waitFor(() => expect(input).toHaveValue(""));
-    expect(screen.queryByText("護照號碼：格式不明")).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("需要選擇處理方式");
+    expect(input).toHaveValue("Email: broken@");
+    expect(screen.getByText(/標題.*8.*14.*EMAIL/)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).not.toHaveTextContent("broken@");
+    const choice = screen.getByLabelText(/處理方式：標題/);
+    expect(within(choice).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual([
+      "",
+      "[REDACTED]",
+      "[REDACTED_EMAIL]",
+      "[REDACTED_PHONE]",
+      "[REDACTED_ID]",
+      "[REDACTED_PASSPORT]",
+      "[REDACTED_BANK_ACCOUNT]",
+      "[REDACTED_TAX_ID]",
+      "[REDACTED_CREDIT_CARD]",
+      "KEEP_ORIGINAL",
+    ]);
+  });
+
+  it("does not send unresolved choices and can cancel without losing the draft", async () => {
+    const candidate = {
+      field_name: "title",
+      start_position: 7,
+      end_position: 14,
+      suspected_type: "EMAIL",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [] })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          detail: {
+            code: "SENSITIVE_CANDIDATES",
+            candidates: [candidate],
+            options: ["[REDACTED]", "KEEP_ORIGINAL"],
+          },
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const title = await screen.findByRole("textbox", { name: "任務標題" });
+    await user.type(title, "Email: broken@");
+    await user.click(screen.getByRole("button", { name: "新增任務" }));
+    await screen.findByLabelText(/處理方式：標題/);
+    await user.click(screen.getByRole("button", { name: "依選擇處理並建立" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("每個疑似內容選擇處理方式");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("button", { name: "取消處理選擇" }));
+
+    expect(title).toHaveValue("Email: broken@");
+    expect(screen.queryByRole("heading", { name: "處理疑似敏感內容" })).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("resubmits the original draft with the selected replacement after interception", async () => {
+    const candidate = {
+      field_name: "title",
+      start_position: 7,
+      end_position: 14,
+      suspected_type: "EMAIL",
+    };
+    const created = { ...task, title: "Email: [REDACTED_EMAIL]" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [] })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          detail: {
+            code: "SENSITIVE_CANDIDATES",
+            candidates: [candidate],
+            options: [
+              "[REDACTED]",
+              "[REDACTED_EMAIL]",
+              "[REDACTED_PHONE]",
+              "[REDACTED_ID]",
+              "[REDACTED_PASSPORT]",
+              "[REDACTED_BANK_ACCOUNT]",
+              "[REDACTED_TAX_ID]",
+              "[REDACTED_CREDIT_CARD]",
+              "KEEP_ORIGINAL",
+            ],
+          },
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => created })
+      .mockResolvedValueOnce({ ok: true, json: async () => [created] });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const title = await screen.findByRole("textbox", { name: "任務標題" });
+    await user.type(title, "Email: broken@");
+    await user.click(screen.getByRole("button", { name: "新增任務" }));
+    const choice = await screen.findByLabelText(/處理方式：標題/);
+    await user.selectOptions(choice, "[REDACTED_EMAIL]");
+    await user.click(screen.getByRole("button", { name: "依選擇處理並建立" }));
+
+    expect(await screen.findByText("Email: [REDACTED_EMAIL]")).toBeInTheDocument();
+    const sentBody = JSON.parse(fetchMock.mock.calls[2][1].body as string);
+    expect(sentBody.title).toBe("Email: broken@");
+    expect(sentBody.redaction_decisions).toEqual([
+      {
+        field_name: "title",
+        start_position: 7,
+        end_position: 14,
+        action: "[REDACTED_EMAIL]",
+        keep_original_confirmed: false,
+      },
+    ]);
+  });
+
+  it("requires separate confirmation before resubmitting a keep-original decision", async () => {
+    const candidate = {
+      field_name: "title",
+      start_position: 5,
+      end_position: 14,
+      suspected_type: "UNCERTAIN",
+    };
+    const created = { ...task, title: "文件代碼 AB1234567" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [] })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          detail: {
+            code: "SENSITIVE_CANDIDATES",
+            candidates: [candidate],
+            options: ["[REDACTED]", "KEEP_ORIGINAL"],
+          },
+        }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => created })
+      .mockResolvedValueOnce({ ok: true, json: async () => [created] });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<App />);
+
+    const title = await screen.findByRole("textbox", { name: "任務標題" });
+    await user.type(title, "文件代碼 AB1234567");
+    await user.click(screen.getByRole("button", { name: "新增任務" }));
+    const choice = await screen.findByLabelText(/處理方式：標題/);
+    await user.selectOptions(choice, "KEEP_ORIGINAL");
+    await user.click(screen.getByRole("button", { name: "依選擇處理並建立" }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(await screen.findByRole("alert")).toHaveTextContent("明確確認保留原文");
+    const confirmation = screen.getByRole("checkbox", { name: /確認保留原文/ });
+    await user.click(confirmation);
+    await user.click(screen.getByRole("button", { name: "依選擇處理並建立" }));
+
+    expect(await screen.findByText("文件代碼 AB1234567")).toBeInTheDocument();
+    const sentBody = JSON.parse(fetchMock.mock.calls[2][1].body as string);
+    expect(sentBody.redaction_decisions[0]).toMatchObject({
+      action: "KEEP_ORIGINAL",
+      keep_original_confirmed: true,
+    });
   });
 
   it("shows the phase-two form defaults and optional fields", async () => {

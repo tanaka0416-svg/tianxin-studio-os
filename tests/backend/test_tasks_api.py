@@ -626,3 +626,192 @@ def test_list_applies_filters_before_requested_sort(tmp_path):
             sort_by="priority",
             order="desc",
         ) == ["filter-c", "filter-a"]
+
+
+def test_uncertain_candidates_return_safe_structured_422_and_event_metadata(tmp_path, caplog):
+    app = make_app(tmp_path)
+    raw_title = "Email: broken@"
+    raw_description = "文件代碼 AB1234567"
+
+    with TestClient(app) as client, caplog.at_level(logging.DEBUG):
+        response = client.post(
+            "/api/tasks",
+            json={"title": raw_title, "description": raw_description},
+        )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "SENSITIVE_CANDIDATES"
+    assert {item["field_name"] for item in detail["candidates"]} == {"title", "description"}
+    assert all(item["start_position"] < item["end_position"] for item in detail["candidates"])
+    assert all(item["suspected_type"] for item in detail["candidates"])
+    assert detail["options"] == [
+        "[REDACTED]",
+        "[REDACTED_EMAIL]",
+        "[REDACTED_PHONE]",
+        "[REDACTED_ID]",
+        "[REDACTED_PASSPORT]",
+        "[REDACTED_BANK_ACCOUNT]",
+        "[REDACTED_TAX_ID]",
+        "[REDACTED_CREDIT_CARD]",
+        "KEEP_ORIGINAL",
+    ]
+    assert raw_title not in response.text
+    assert raw_description not in response.text
+    assert raw_title not in caplog.text
+    assert raw_description not in caplog.text
+    with app.state.session_factory() as session:
+        assert session.query(Task).count() == 0
+        events = session.query(RedactionEvent).all()
+        assert len(events) == 2
+        assert {event.redaction_type for event in events} == {"UNCERTAIN"}
+        assert all(not hasattr(event, "original_value") for event in events)
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "[REDACTED]",
+        "[REDACTED_EMAIL]",
+        "[REDACTED_PHONE]",
+        "[REDACTED_ID]",
+        "[REDACTED_PASSPORT]",
+        "[REDACTED_BANK_ACCOUNT]",
+        "[REDACTED_TAX_ID]",
+        "[REDACTED_CREDIT_CARD]",
+    ],
+)
+def test_selected_redaction_marker_is_revalidated_applied_and_audited(tmp_path, action):
+    app = make_app(tmp_path)
+    raw_title = "Email: broken@"
+    with TestClient(app) as client:
+        intercepted = client.post("/api/tasks", json={"title": raw_title})
+        candidate = intercepted.json()["detail"]["candidates"][0]
+        response = client.post(
+            "/api/tasks",
+            json={
+                "title": raw_title,
+                "redaction_decisions": [
+                    {
+                        "field_name": candidate["field_name"],
+                        "start_position": candidate["start_position"],
+                        "end_position": candidate["end_position"],
+                        "action": action,
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["title"] == f"Email: {action}"
+    assert "broken@" not in response.text
+    with app.state.session_factory() as session:
+        assert session.query(Task).count() == 1
+        events = session.query(RedactionEvent).order_by(RedactionEvent.created_at).all()
+        assert len(events) == 2
+        assert events[-1].redaction_type.startswith("MANUAL_")
+        assert events[-1].original_length == len("broken@")
+        assert not hasattr(events[-1], "original_value")
+
+
+def test_keep_original_requires_explicit_confirmation_and_records_event(tmp_path):
+    app = make_app(tmp_path)
+    raw_title = "文件代碼 AB1234567"
+    with TestClient(app) as client:
+        intercepted = client.post("/api/tasks", json={"title": raw_title})
+        candidate = intercepted.json()["detail"]["candidates"][0]
+        decision = {
+            "field_name": candidate["field_name"],
+            "start_position": candidate["start_position"],
+            "end_position": candidate["end_position"],
+            "action": "KEEP_ORIGINAL",
+        }
+        unconfirmed = client.post(
+            "/api/tasks", json={"title": raw_title, "redaction_decisions": [decision]}
+        )
+        confirmed = client.post(
+            "/api/tasks",
+            json={
+                "title": raw_title,
+                "redaction_decisions": [
+                    {**decision, "keep_original_confirmed": True}
+                ],
+            },
+        )
+
+    assert unconfirmed.status_code == 422
+    assert raw_title not in unconfirmed.text
+    assert confirmed.status_code == 201
+    assert confirmed.json()["title"] == raw_title
+    with app.state.session_factory() as session:
+        assert session.query(Task).count() == 1
+        events = session.query(RedactionEvent).order_by(RedactionEvent.created_at).all()
+        assert events[-1].redaction_type == "MANUAL_KEEP_CONFIRMED"
+        assert not hasattr(events[-1], "original_value")
+
+
+def test_incomplete_decisions_leave_task_unwritten_and_return_remaining_candidates(tmp_path):
+    app = make_app(tmp_path)
+    title = "Email: broken@"
+    description = "文件代碼 AB1234567"
+    with TestClient(app) as client:
+        intercepted = client.post(
+            "/api/tasks", json={"title": title, "description": description}
+        )
+        title_candidate = next(
+            item
+            for item in intercepted.json()["detail"]["candidates"]
+            if item["field_name"] == "title"
+        )
+        response = client.post(
+            "/api/tasks",
+            json={
+                "title": title,
+                "description": description,
+                "redaction_decisions": [
+                    {
+                        "field_name": "title",
+                        "start_position": title_candidate["start_position"],
+                        "end_position": title_candidate["end_position"],
+                        "action": "[REDACTED]",
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 422
+    remaining = response.json()["detail"]["candidates"]
+    assert [item["field_name"] for item in remaining] == ["description"]
+    assert title not in response.text
+    assert description not in response.text
+    with app.state.session_factory() as session:
+        assert session.query(Task).count() == 0
+
+
+def test_stale_decision_is_rejected_without_echo_and_keeps_uncertain_event(tmp_path):
+    app = make_app(tmp_path)
+    raw_title = "Email: broken@"
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/tasks",
+            json={
+                "title": raw_title,
+                "redaction_decisions": [
+                    {
+                        "field_name": "title",
+                        "start_position": 0,
+                        "end_position": 1,
+                        "action": "[REDACTED]",
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 422
+    assert raw_title not in response.text
+    with app.state.session_factory() as session:
+        assert session.query(Task).count() == 0
+        events = session.query(RedactionEvent).all()
+        assert len(events) == 1
+        assert events[0].redaction_type == "UNCERTAIN"
+        assert not hasattr(events[0], "original_value")

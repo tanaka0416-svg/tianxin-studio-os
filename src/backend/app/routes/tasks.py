@@ -7,16 +7,33 @@ from app.models.task import RedactionEvent, Task
 from app.schemas.task import (
     AssignedAI,
     Department,
+    RedactionDecisionInput,
     TaskCreate,
     TaskPriority,
     TaskRead,
     TaskStatus,
     TaskStatusUpdate,
 )
-from app.services.redaction_gate import UncertainSensitiveData, redact_text
+from app.services.redaction_gate import (
+    InvalidRedactionDecision,
+    RedactionDecision,
+    UncertainSensitiveData,
+    redact_text,
+)
 
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+REDACTION_ACTIONS = [
+    "[REDACTED]",
+    "[REDACTED_EMAIL]",
+    "[REDACTED_PHONE]",
+    "[REDACTED_ID]",
+    "[REDACTED_PASSPORT]",
+    "[REDACTED_BANK_ACCOUNT]",
+    "[REDACTED_TAX_ID]",
+    "[REDACTED_CREDIT_CARD]",
+    "KEEP_ORIGINAL",
+]
 
 
 def _save_records(session, records) -> None:
@@ -38,26 +55,77 @@ def create_task(payload: TaskCreate, request: Request):
     session_factory = request.app.state.session_factory
     with session_factory() as session:
         redaction_records = []
+        uncertain_records = []
         safe_fields = {}
-        uncertain = False
+        invalid_decision = False
+        decisions_by_field: dict[str, list[RedactionDecisionInput]] = {
+            "title": [],
+            "description": [],
+        }
+        for decision in payload.redaction_decisions:
+            decisions_by_field[decision.field_name].append(decision)
+
         for field_name, value in (("title", payload.title), ("description", payload.description)):
             if value is None:
+                if decisions_by_field[field_name]:
+                    invalid_decision = True
                 safe_fields[field_name] = None
                 continue
             try:
-                result = redact_text(value, field_name=field_name)
+                result = redact_text(
+                    value,
+                    field_name=field_name,
+                    decisions=tuple(
+                        RedactionDecision(
+                            field_name=decision.field_name,
+                            start_position=decision.start_position,
+                            end_position=decision.end_position,
+                            action=decision.action,
+                            keep_original_confirmed=decision.keep_original_confirmed,
+                        )
+                        for decision in decisions_by_field[field_name]
+                    ),
+                )
                 safe_fields[field_name] = result.text
                 redaction_records.extend(result.records)
             except UncertainSensitiveData as error:
-                uncertain = True
-                redaction_records.extend(error.records)
+                uncertain_records.extend(error.records)
+            except InvalidRedactionDecision:
+                invalid_decision = True
+                try:
+                    redact_text(value, field_name=field_name)
+                except UncertainSensitiveData as error:
+                    uncertain_records.extend(error.records)
 
-        if uncertain:
-            _save_records(session, redaction_records)
+        if uncertain_records:
+            _save_records(session, uncertain_records)
             session.commit()
+            if invalid_decision:
+                raise HTTPException(
+                    status_code=422,
+                    detail="脫敏處理選擇無效；請重新檢查候選內容。",
+                ) from None
             raise HTTPException(
                 status_code=422,
-                detail="任務文字包含無法安全分類的資料，未建立任務。",
+                detail={
+                    "code": "SENSITIVE_CANDIDATES",
+                    "message": "任務文字包含需要人工選擇處理方式的候選內容。",
+                    "candidates": [
+                        {
+                            "field_name": record.field_name,
+                            "start_position": record.start_position,
+                            "end_position": record.end_position,
+                            "suspected_type": record.suspected_type or "UNCERTAIN",
+                        }
+                        for record in uncertain_records
+                    ],
+                    "options": REDACTION_ACTIONS,
+                },
+            ) from None
+        if invalid_decision:
+            raise HTTPException(
+                status_code=422,
+                detail="脫敏處理選擇無效；請重新檢查候選內容。",
             ) from None
 
         task = Task(

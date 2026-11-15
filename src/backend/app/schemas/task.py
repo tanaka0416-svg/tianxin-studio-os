@@ -1,8 +1,9 @@
 from datetime import date, datetime, timezone
 from enum import Enum
 import re
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 
 class TaskStatus(str, Enum):
@@ -41,6 +42,32 @@ class TaskPriority(str, Enum):
     URGENT = "URGENT"
 
 
+class RedactionDecisionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_name: Literal["title", "description"]
+    start_position: int = Field(ge=0)
+    end_position: int = Field(gt=0)
+    action: Literal[
+        "[REDACTED]",
+        "[REDACTED_EMAIL]",
+        "[REDACTED_PHONE]",
+        "[REDACTED_ID]",
+        "[REDACTED_PASSPORT]",
+        "[REDACTED_BANK_ACCOUNT]",
+        "[REDACTED_TAX_ID]",
+        "[REDACTED_CREDIT_CARD]",
+        "KEEP_ORIGINAL",
+    ]
+    keep_original_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def validate_confirmation(self):
+        if self.end_position <= self.start_position:
+            raise ValueError("脫敏候選位置無效")
+        return self
+
+
 class TaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -50,6 +77,7 @@ class TaskCreate(BaseModel):
     assigned_ai: AssignedAI | None = None
     priority: TaskPriority = TaskPriority.MEDIUM
     due_date: date | None = None
+    redaction_decisions: list[RedactionDecisionInput] = Field(default_factory=list)
 
     @field_validator("title")
     @classmethod
