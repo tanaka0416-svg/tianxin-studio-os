@@ -181,7 +181,19 @@ export default function App() {
   const [expandedDescriptions, setExpandedDescriptions] = useState<Set<string>>(
     () => new Set(),
   );
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<TaskDraft>(emptyDraft);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editCandidates, setEditCandidates] = useState<RedactionCandidate[]>([]);
+  const [editSelections, setEditSelections] = useState<Record<string, RedactionAction | "">>({});
+  const [editKeepOriginalConfirmations, setEditKeepOriginalConfirmations] = useState<
+    Record<string, boolean>
+  >({});
+  const [archiveConfirmationTaskId, setArchiveConfirmationTaskId] = useState<string | null>(null);
+  const [archiveSaving, setArchiveSaving] = useState(false);
   const savingRef = useRef(false);
+  const editSavingRef = useRef(false);
+  const archiveSavingRef = useRef(false);
   const loadedRef = useRef(false);
   const requestIdRef = useRef(0);
   const listControllerRef = useRef<AbortController | null>(null);
@@ -380,6 +392,181 @@ export default function App() {
     } finally {
       savingRef.current = false;
       setSaving(false);
+    }
+  }
+
+  function beginEdit(task: Task) {
+    setEditingTaskId(task.id);
+    setEditDraft({
+      title: task.title,
+      description: task.description ?? "",
+      department: task.department ?? "",
+      assignedAI: task.assigned_ai ?? "",
+      priority: task.priority ?? "MEDIUM",
+      dueDate: task.due_date ?? "",
+    });
+    setEditCandidates([]);
+    setEditSelections({});
+    setEditKeepOriginalConfirmations({});
+    setArchiveConfirmationTaskId(null);
+    setError("");
+    setSuccessMessage("");
+    setOutcomeUnknown(false);
+  }
+
+  function cancelEdit() {
+    setEditingTaskId(null);
+    setEditDraft(emptyDraft());
+    setEditCandidates([]);
+    setEditSelections({});
+    setEditKeepOriginalConfirmations({});
+    setError("");
+  }
+
+  function updateEditDraft<K extends keyof TaskDraft>(key: K, value: TaskDraft[K]) {
+    setEditDraft((current) => ({ ...current, [key]: value }));
+    if (key === "title" || key === "description") {
+      setEditCandidates([]);
+      setEditSelections({});
+      setEditKeepOriginalConfirmations({});
+      setError("");
+    }
+  }
+
+  async function saveTaskEdit(event: FormEvent<HTMLFormElement>, task: Task) {
+    event.preventDefault();
+    if (editSavingRef.current) return;
+    const submittedTitle = editDraft.title.trim();
+    if (!submittedTitle) {
+      setError("任務標題不可空白。");
+      return;
+    }
+
+    const redactionDecisions: RedactionDecision[] = [];
+    for (const candidate of editCandidates) {
+      const key = redactionCandidateKey(candidate);
+      const action = editSelections[key];
+      if (!action) {
+        setError("請先為每個疑似內容選擇處理方式，再儲存編輯。");
+        return;
+      }
+      const keepOriginalConfirmed = editKeepOriginalConfirmations[key] === true;
+      if (action === "KEEP_ORIGINAL" && !keepOriginalConfirmed) {
+        setError("請先明確確認保留原文，再儲存編輯。");
+        return;
+      }
+      redactionDecisions.push({
+        field_name: candidate.field_name,
+        start_position: candidate.start_position,
+        end_position: candidate.end_position,
+        action,
+        keep_original_confirmed: keepOriginalConfirmed,
+      });
+    }
+
+    editSavingRef.current = true;
+    setEditSaving(true);
+    setError("");
+    setSuccessMessage("");
+    setListLoadFailed(false);
+    setOutcomeUnknown(false);
+    try {
+      const response = await fetch(`${API_URL}/${task.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: submittedTitle,
+          description: editDraft.description.trim() || null,
+          department: editDraft.department || null,
+          primary_ai: editDraft.assignedAI || null,
+          priority: editDraft.priority,
+          due_date: editDraft.dueDate || null,
+          ...(redactionDecisions.length > 0
+            ? { redaction_decisions: redactionDecisions }
+            : {}),
+        }),
+      });
+
+      if (response.status === 422) {
+        const responseBody = await response.json().catch(() => null) as {
+          detail?: { code?: string; candidates?: unknown };
+        } | null;
+        const detail = responseBody?.detail;
+        const candidates = detail?.candidates;
+        if (
+          detail?.code === "SENSITIVE_CANDIDATES"
+          && Array.isArray(candidates)
+          && candidates.length > 0
+        ) {
+          const validCandidates = candidates.filter((candidate): candidate is RedactionCandidate =>
+            candidate !== null
+            && typeof candidate === "object"
+            && ["title", "description"].includes((candidate as RedactionCandidate).field_name)
+            && Number.isInteger((candidate as RedactionCandidate).start_position)
+            && Number.isInteger((candidate as RedactionCandidate).end_position)
+            && (candidate as RedactionCandidate).start_position >= 0
+            && (candidate as RedactionCandidate).end_position > (candidate as RedactionCandidate).start_position
+            && typeof (candidate as RedactionCandidate).suspected_type === "string",
+          );
+          if (validCandidates.length > 0) {
+            setEditCandidates(validCandidates);
+            setEditSelections({});
+            setEditKeepOriginalConfirmations({});
+            setError("發現需要選擇處理方式的疑似內容。候選原文不會顯示在提示中。");
+            return;
+          }
+        }
+        setError("編輯內容未通過伺服器檢查，請檢查標題與描述。");
+        return;
+      }
+      if (!response.ok) {
+        setError("目前無法儲存任務編輯，請稍後再試。");
+        return;
+      }
+
+      await response.json();
+      setEditingTaskId(null);
+      setEditCandidates([]);
+      setEditSelections({});
+      setEditKeepOriginalConfirmations({});
+      setSuccessMessage("任務已更新。");
+      await loadTasks(queryRef.current);
+    } catch {
+      setError("更新結果尚待確認；請重新載入任務清單確認是否已更新。系統不會自動重送。");
+      setOutcomeUnknown(true);
+    } finally {
+      editSavingRef.current = false;
+      setEditSaving(false);
+    }
+  }
+
+  function requestArchive(taskId: string) {
+    setEditingTaskId(null);
+    setEditCandidates([]);
+    setEditSelections({});
+    setEditKeepOriginalConfirmations({});
+    setArchiveConfirmationTaskId(taskId);
+    setError("");
+    setSuccessMessage("");
+  }
+
+  async function confirmArchive(task: Task) {
+    if (archiveSavingRef.current) return;
+    archiveSavingRef.current = true;
+    setArchiveSaving(true);
+    setError("");
+    setSuccessMessage("");
+    try {
+      const response = await fetch(`${API_URL}/${task.id}/archive`, { method: "PATCH" });
+      if (!response.ok) throw new Error("Archive rejected");
+      setArchiveConfirmationTaskId(null);
+      setSuccessMessage("任務已封存。");
+      await loadTasks(queryRef.current, "任務已封存，但清單重新載入失敗");
+    } catch {
+      setError("無法封存任務，請稍後再試。");
+    } finally {
+      archiveSavingRef.current = false;
+      setArchiveSaving(false);
     }
   }
 
@@ -754,12 +941,219 @@ export default function App() {
                           <div><dt>截止日</dt><dd>{task.due_date || "未設定"}</dd></div>
                           <div className="updated-at"><dt>更新於</dt><dd>{formatTime(task.updated_at)}</dd></div>
                         </dl>
+                        {editingTaskId === task.id ? (
+                          <form
+                            className="task-edit-form"
+                            aria-label={`編輯任務：${task.title}`}
+                            onSubmit={(event) => void saveTaskEdit(event, task)}
+                          >
+                            <h4>編輯任務</h4>
+                            <div className="task-form-grid">
+                              <div className="form-field form-field-wide">
+                                <label htmlFor={`edit-title-${task.id}`}>任務標題</label>
+                                <input
+                                  id={`edit-title-${task.id}`}
+                                  aria-label={`編輯任務標題：${task.title}`}
+                                  value={editDraft.title}
+                                  onChange={(event) => updateEditDraft("title", event.target.value)}
+                                  required
+                                />
+                              </div>
+                              <div className="form-field form-field-wide">
+                                <label htmlFor={`edit-description-${task.id}`}>任務描述</label>
+                                <textarea
+                                  id={`edit-description-${task.id}`}
+                                  aria-label="編輯任務描述"
+                                  value={editDraft.description}
+                                  onChange={(event) => updateEditDraft("description", event.target.value)}
+                                  maxLength={5000}
+                                  rows={3}
+                                />
+                              </div>
+                              <div className="form-field">
+                                <label htmlFor={`edit-department-${task.id}`}>部門</label>
+                                <select
+                                  id={`edit-department-${task.id}`}
+                                  aria-label="編輯部門"
+                                  value={editDraft.department}
+                                  onChange={(event) => updateEditDraft("department", event.target.value as TaskDraft["department"])}
+                                >
+                                  <option value="">未指派</option>
+                                  {departments.map((item) => (
+                                    <option key={item.value} value={item.value}>{item.label}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="form-field">
+                                <label htmlFor={`edit-assigned-ai-${task.id}`}>主要負責 AI</label>
+                                <select
+                                  id={`edit-assigned-ai-${task.id}`}
+                                  aria-label="編輯主要負責 AI"
+                                  value={editDraft.assignedAI}
+                                  onChange={(event) => updateEditDraft("assignedAI", event.target.value as TaskDraft["assignedAI"])}
+                                >
+                                  <option value="">未指派</option>
+                                  {assignedAIs.map((item) => (
+                                    <option key={item.value} value={item.value}>{item.label}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="form-field">
+                                <label htmlFor={`edit-priority-${task.id}`}>優先級</label>
+                                <select
+                                  id={`edit-priority-${task.id}`}
+                                  aria-label="編輯優先級"
+                                  value={editDraft.priority}
+                                  onChange={(event) => updateEditDraft("priority", event.target.value as PriorityCode)}
+                                >
+                                  {priorities.map((item) => (
+                                    <option key={item.value} value={item.value}>{item.label}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="form-field">
+                                <label htmlFor={`edit-due-date-${task.id}`}>截止日</label>
+                                <input
+                                  id={`edit-due-date-${task.id}`}
+                                  aria-label="編輯截止日"
+                                  type="date"
+                                  value={editDraft.dueDate}
+                                  onInput={(event) => updateEditDraft("dueDate", event.currentTarget.value)}
+                                />
+                              </div>
+                            </div>
+                            {editCandidates.length > 0 && (
+                              <section className="redaction-review" aria-label="編輯任務的疑似敏感內容審查">
+                                <div className="redaction-review-heading">
+                                  <div>
+                                    <h5>處理疑似敏感內容</h5>
+                                    <p>提示只顯示欄位、位置與類型，不會顯示候選原文。</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="secondary-button"
+                                    onClick={() => {
+                                      setEditCandidates([]);
+                                      setEditSelections({});
+                                      setEditKeepOriginalConfirmations({});
+                                      setError("");
+                                    }}
+                                  >
+                                    取消處理選擇
+                                  </button>
+                                </div>
+                                <div className="redaction-candidate-list">
+                                  {editCandidates.map((candidate, index) => {
+                                    const key = redactionCandidateKey(candidate);
+                                    const fieldLabel = redactionFieldLabel(candidate.field_name);
+                                    const action = editSelections[key] ?? "";
+                                    return (
+                                      <div className="redaction-candidate" key={key}>
+                                        <p className="redaction-candidate-location">
+                                          {fieldLabel}第 {candidate.start_position + 1}–{candidate.end_position} 個字元，
+                                          疑似類型：{candidate.suspected_type}
+                                        </p>
+                                        <label htmlFor={`edit-redaction-choice-${index}`}>
+                                          處理方式：{fieldLabel}候選 {index + 1}
+                                        </label>
+                                        <select
+                                          id={`edit-redaction-choice-${index}`}
+                                          aria-label={`處理方式：${fieldLabel}候選 ${index + 1}`}
+                                          value={action}
+                                          onChange={(event) => {
+                                            const nextAction = event.target.value as RedactionAction | "";
+                                            setEditSelections((current) => ({ ...current, [key]: nextAction }));
+                                            setEditKeepOriginalConfirmations((current) => ({ ...current, [key]: false }));
+                                            setError("");
+                                          }}
+                                        >
+                                          <option value="">請選擇處理方式</option>
+                                          {redactionOptions.map((option) => (
+                                            <option key={option.value} value={option.value}>{option.label}</option>
+                                          ))}
+                                        </select>
+                                        {action === "KEEP_ORIGINAL" && (
+                                          <label className="keep-original-confirmation">
+                                            <input
+                                              type="checkbox"
+                                              aria-label={`確認保留原文：${fieldLabel}候選 ${index + 1}`}
+                                              checked={editKeepOriginalConfirmations[key] === true}
+                                              onChange={(event) => {
+                                                setEditKeepOriginalConfirmations((current) => ({
+                                                  ...current,
+                                                  [key]: event.target.checked,
+                                                }));
+                                                setError("");
+                                              }}
+                                            />
+                                            我已確認要保留此候選原文
+                                          </label>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </section>
+                            )}
+                            <div className="task-edit-actions">
+                              <button type="button" className="secondary-button" onClick={cancelEdit}>
+                                取消編輯
+                              </button>
+                              <button type="submit" disabled={editSaving || !editDraft.title.trim()}>
+                                {editSaving ? "儲存中…" : editCandidates.length > 0 ? "依選擇處理並儲存" : "儲存編輯"}
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <div className="task-actions">
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              disabled={editingTaskId !== null || archiveSaving}
+                              onClick={() => beginEdit(task)}
+                            >
+                              編輯
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary-button archive-button"
+                              disabled={editingTaskId !== null || archiveSaving}
+                              onClick={() => requestArchive(task.id)}
+                            >
+                              封存
+                            </button>
+                          </div>
+                        )}
+                        {archiveConfirmationTaskId === task.id && (
+                          <div className="archive-confirmation" role="group" aria-label={`確認封存任務：${task.title}`}>
+                            <p>封存後會從一般任務清單移除，且不會刪除任務資料。</p>
+                            <div className="task-edit-actions">
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                disabled={archiveSaving}
+                                onClick={() => setArchiveConfirmationTaskId(null)}
+                              >
+                                取消封存
+                              </button>
+                              <button
+                                type="button"
+                                className="danger-button"
+                                disabled={archiveSaving}
+                                onClick={() => void confirmArchive(task)}
+                              >
+                                {archiveSaving ? "封存中…" : "確認封存"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                       <label className="status-control">
                         <span className="sr-only">狀態：{task.title}</span>
                         <select
                           aria-label={`狀態：${task.title}`}
                           value={task.status}
+                          disabled={editingTaskId === task.id || archiveConfirmationTaskId === task.id}
                           onChange={(event) => changeStatus(task, event.target.value as TaskStatus)}
                         >
                           {statuses.map((item) => (

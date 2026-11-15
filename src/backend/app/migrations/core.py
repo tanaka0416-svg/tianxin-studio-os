@@ -11,7 +11,8 @@ from alembic.config import Config
 
 
 LEGACY_REVISION = "0001_legacy_baseline"
-CURRENT_REVISION = "0002_task_metadata"
+METADATA_REVISION = "0002_task_metadata"
+CURRENT_REVISION = "0003_task_archiving"
 LEGACY_TASK_COLUMNS = ("id", "title", "status", "created_at", "updated_at")
 TASK_COLUMNS = LEGACY_TASK_COLUMNS + (
     "description",
@@ -20,6 +21,7 @@ TASK_COLUMNS = LEGACY_TASK_COLUMNS + (
     "priority",
     "due_date",
 )
+CURRENT_TASK_COLUMNS = TASK_COLUMNS + ("archived_at",)
 REDACTION_COLUMNS = (
     "id",
     "field_name",
@@ -84,14 +86,19 @@ def _validate_columns(
             raise MigrationError(f"Unsupported primary key in table '{table}'.")
 
 
-def _validate_task_schema(connection: sqlite3.Connection, current: bool) -> None:
-    expected_names = TASK_COLUMNS if current else LEGACY_TASK_COLUMNS
-    expected_types = (
-        ("VARCHAR(36)", "VARCHAR", "VARCHAR(20)", "DATETIME", "DATETIME")
-        + (("TEXT", "TEXT", "TEXT", "TEXT", "DATE") if current else ())
+def _validate_task_schema(connection: sqlite3.Connection, revision: str | None) -> None:
+    is_metadata = revision in (METADATA_REVISION, CURRENT_REVISION)
+    is_current = revision == CURRENT_REVISION
+    expected_names = (
+        CURRENT_TASK_COLUMNS if is_current else TASK_COLUMNS if is_metadata else LEGACY_TASK_COLUMNS
     )
+    expected_types = ("VARCHAR(36)", "VARCHAR", "VARCHAR(20)", "DATETIME", "DATETIME")
+    if is_metadata:
+        expected_types += ("TEXT", "TEXT", "TEXT", "TEXT", "DATE")
+    if is_current:
+        expected_types += ("DATETIME",)
     required = frozenset(("id", "title", "status", "created_at", "updated_at"))
-    if current:
+    if is_metadata:
         required = required | {"priority"}
     _validate_columns(
         connection,
@@ -108,7 +115,7 @@ def _validate_task_schema(connection: sqlite3.Connection, current: bool) -> None
         for status in ("TODO", "IN_PROGRESS", "REVIEW", "BLOCKED", "RETURNED", "DONE")
     ):
         raise MigrationError("Unsupported task status constraint.")
-    if current:
+    if is_metadata:
         priority_default = _table_columns(connection, "tasks")[8][4]
         if priority_default != "'MEDIUM'":
             raise MigrationError("Unsupported priority default in table 'tasks'.")
@@ -148,19 +155,19 @@ def _inspect_database(path: Path) -> str:
                 if len(versions) != 1:
                     raise MigrationError("Unsupported Alembic revision state.")
                 revision = versions[0][0]
-                if revision == LEGACY_REVISION:
-                    current = False
-                elif revision == CURRENT_REVISION:
-                    current = True
-                else:
+                if revision not in (LEGACY_REVISION, METADATA_REVISION, CURRENT_REVISION):
                     raise MigrationError("Unknown Alembic revision.")
             else:
-                current = False
+                revision = None
 
-            _validate_task_schema(connection, current=current)
+            _validate_task_schema(connection, revision=revision)
             _validate_redaction_schema(connection)
             if versioned:
-                return "current" if current else "versioned_legacy"
+                if revision == CURRENT_REVISION:
+                    return "current"
+                if revision == METADATA_REVISION:
+                    return "versioned_metadata"
+                return "versioned_legacy"
             return "legacy"
     except MigrationError:
         raise

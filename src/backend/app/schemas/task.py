@@ -3,7 +3,15 @@ from enum import Enum
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 
 class TaskStatus(str, Enum):
@@ -109,6 +117,61 @@ class TaskCreate(BaseModel):
 
 class TaskStatusUpdate(BaseModel):
     status: TaskStatus
+
+
+class TaskUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    title: str | None = None
+    description: str | None = Field(default=None, max_length=5000)
+    department: Department | None = None
+    assigned_ai: AssignedAI | None = Field(
+        default=None, validation_alias=AliasChoices("primary_ai", "assigned_ai")
+    )
+    priority: TaskPriority | None = None
+    due_date: date | None = None
+    redaction_decisions: list[RedactionDecisionInput] = Field(default_factory=list)
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_blank_or_null(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("任務標題不可為空")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("任務標題不可空白")
+        return normalized
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value):
+        return TaskCreate.normalize_description(value)
+
+    @field_validator("priority")
+    @classmethod
+    def priority_must_not_be_null(cls, value: TaskPriority | None) -> TaskPriority:
+        if value is None:
+            raise ValueError("優先級不可為空")
+        return value
+
+    @field_validator("due_date", mode="before")
+    @classmethod
+    def require_iso_date(cls, value):
+        return TaskCreate.require_iso_date(value)
+
+    @model_validator(mode="after")
+    def require_mutable_field(self):
+        mutable_fields = {
+            "title",
+            "description",
+            "department",
+            "assigned_ai",
+            "priority",
+            "due_date",
+        }
+        if not mutable_fields.intersection(self.model_fields_set):
+            raise ValueError("請至少提供一個可更新欄位")
+        return self
 
 
 class TaskRead(BaseModel):

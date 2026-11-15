@@ -15,7 +15,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; }
+body { margin: 0; min-height: 100vh; }
 button, input, select { font: inherit; }
 button, a, select { -webkit-tap-highlight-color: transparent; }
 
@@ -123,6 +123,15 @@ h1 { margin: 0; color: #19273d; font-size: clamp(27px, 3vw, 34px); line-height: 
 .task-meta dt { color: #98a2b0; }
 .task-meta dd { overflow-wrap: anywhere; margin: 0; color: #526178; font-weight: 600; }
 .task-meta .updated-at dd { color: #98a2b0; font-weight: 400; }
+.task-actions, .task-edit-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.task-edit-form, .archive-confirmation { display: grid; gap: 12px; margin-top: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: #fbfcfe; }
+.task-edit-form h4 { margin: 0; color: #26364c; font-size: 13px; }
+.task-edit-actions { justify-content: flex-end; margin-top: 0; }
+.task-edit-actions > button:not(.secondary-button), .danger-button { min-height: 36px; padding: 0 13px; border: 0; border-radius: 6px; background: var(--blue); color: #fff; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; }
+.task-edit-actions > button:disabled, .danger-button:disabled { opacity: .6; cursor: not-allowed; }
+.danger-button { background: #b64c3e; }
+.archive-confirmation { border-color: #f0d4d0; background: #fff8f7; }
+.archive-confirmation p { margin: 0; color: #81524c; font-size: 12px; line-height: 1.5; }
 .status-control select { min-width: 106px; height: 33px; padding: 0 25px 0 10px; border: 1px solid #e2e7ef; border-radius: 6px; color: #58667a; background: #fff; outline: none; font-size: 11px; cursor: pointer; }
 .empty-state { display: grid; min-height: 134px; margin: 0; place-items: center; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: #929dad; font-size: 13px; text-align: center; }
 .footer-note { margin-top: 29px; color: #a1aab7; font-size: 11px; }
@@ -156,6 +165,7 @@ h1 { margin: 0; color: #19273d; font-size: clamp(27px, 3vw, 34px); line-height: 
   .status-control { grid-column: 2; }
   .status-control select { width: 100%; }
   .task-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 10px; }
+  .task-actions > button, .task-edit-actions > button, .archive-confirmation .task-edit-actions > button { flex: 1 1 120px; }
   .task-section { margin-top: 28px; }
 }
 
